@@ -50,8 +50,16 @@ def extract_events(client, output_dir, logger):
 
     try:
         events_api = EventsAPI(client)
-        events = events_api.get_all_events()
-        logger.info(f"Retrieved {len(events)} events")
+        all_events = events_api.get_all_events()
+        logger.info(f"Retrieved {len(all_events)} total events")
+
+        # Filter out RSVP events - keep only TICKETING events
+        events = [
+            e for e in all_events
+            if e.get('registration', {}).get('type') == 'TICKETING'
+        ]
+        rsvp_count = len(all_events) - len(events)
+        logger.info(f"Filtered to {len(events)} TICKETING events (excluded {rsvp_count} RSVP events)")
 
         if not events:
             logger.warning("No events found")
@@ -100,8 +108,8 @@ def extract_contacts(client, output_dir, logger):
         return None
 
 
-def extract_guests(client, output_dir, contacts, logger):
-    """Extract and transform all guests (enriched with contact data)."""
+def extract_guests(client, output_dir, logger):
+    """Extract and transform all guests."""
     logger.info("=" * 60)
     logger.info("Extracting Guests")
     logger.info("=" * 60)
@@ -118,24 +126,13 @@ def extract_guests(client, output_dir, contacts, logger):
         # Transform guests
         transformed_guests = GuestsTransformer.transform_guests(guests)
 
-        # Enrich with contact data (names, emails, phones)
-        if contacts:
-            logger.info(f"Enriching {len(guests)} guests with contact data...")
-            enriched_guests = GuestsTransformer.enrich_with_contact_data(
-                transformed_guests, contacts
-            )
-        else:
-            logger.warning("No contacts available for enrichment")
-            enriched_guests = transformed_guests
-
-        # Save
+        # Save guests
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = output_dir / f"guests_{timestamp}.csv"
+        BaseTransformer.save_to_csv(transformed_guests, str(output_path))
+        logger.info(f"Saved {len(transformed_guests)} guests to {output_path.name}")
 
-        BaseTransformer.save_to_csv(enriched_guests, str(output_path))
-        logger.info(f"Saved {len(enriched_guests)} guests to {output_path.name}")
-
-        return enriched_guests
+        return transformed_guests
 
     except Exception as e:
         logger.error(f"Guests extraction failed: {e}", exc_info=True)
@@ -299,8 +296,8 @@ def main():
         contacts = extract_contacts(client, output_dir, logger)
         results['contacts'] = contacts is not None
 
-        # Guests (enriched with contacts)
-        guests = extract_guests(client, output_dir, contacts, logger)
+        # Guests
+        guests = extract_guests(client, output_dir, logger)
         results['guests'] = guests is not None
 
         # Order Summaries (uses events)
