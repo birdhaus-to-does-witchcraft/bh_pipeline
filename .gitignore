@@ -62,6 +62,7 @@ logs/
 
 # Data files (raw API responses should be gitignored if large)
 # Uncomment if needed:
+/data/
 # *.json
 *.csv
 *.parquet

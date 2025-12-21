@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python scripts/test_setup.py:*)",
+      "Bash(python scripts/test_wix_client.py:*)",
+      "Read(//mnt/c/Users/saaku/the-lab/technologist/birdhaus_projects/**)",
+      "Bash(tree:*)",
+      "Bash(find:*)",
+      "Bash(mkdir:*)",
+      "Bash(python:*)",
+      "Bash(python scripts/test_phase2.py:*)",
+      "Read(//home/saaku/.claude/**)",
+      "Bash(cat:*)",
+      "Bash(pip show mcp)",
+      "Bash(timeout 5 python -m mcp_server.server)",
+      "Bash(env)",
+      "Read(//home/saaku/**)",
+      "Read(//mnt/c/Users/saaku/AppData/Roaming/Code/User/**)",
+      "Bash(timeout 2 head -20)",
+      "mcp__birdhaus-data-pipeline__query_events",
+      "mcp__birdhaus-data-pipeline__get_pipeline_status",
+      "mcp__birdhaus-data-pipeline__get_api_stats",
+      "mcp__birdhaus-data-pipeline__query_contacts",
+      "mcp__birdhaus-data-pipeline__query_local_data",
+      "mcp__birdhaus-data-pipeline__get_transactions",
+      "WebSearch",
+      "WebFetch(domain:dev.wix.com)",
+      "mcp__birdhaus-data-pipeline__query_guests",
+      "Bash(source venv/bin/activate)",
+      "Bash(python3 -c \"from datetime import datetime; print(''October 26, 2025 is:'', datetime(2025, 10, 26).strftime(''%A'')); print(''October 30, 2025 is:'', datetime(2025, 10, 30).strftime(''%A''))\")",
+      "Bash(python3:*)"
+    ],
+    "deny": [],
+    "ask": []
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "birdhaus-data-pipeline"
+  ]
+}

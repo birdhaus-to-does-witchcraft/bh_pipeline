@@ -47,7 +47,8 @@ class EventsAPI:
         limit: int = 100,
         offset: int = 0,
         filter_dict: Optional[Dict[str, Any]] = None,
-        sort: Optional[List[Dict[str, str]]] = None
+        sort: Optional[List[Dict[str, str]]] = None,
+        fieldsets: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Query events with filtering and pagination.
@@ -59,6 +60,8 @@ class EventsAPI:
             offset: Offset for pagination (default: 0)
             filter_dict: Filter criteria (e.g., {"status": ["PUBLISHED"]})
             sort: Sort criteria (e.g., [{"fieldName": "scheduling.config.startDate", "order": "ASC"}])
+            fieldsets: Fieldsets to include (e.g., ["DETAILS", "TEXTS"])
+                      Note: TEXTS fieldset is needed for full description content in bulk queries
 
         Returns:
             Response with events list and paging metadata
@@ -67,7 +70,8 @@ class EventsAPI:
             >>> events = events_api.query_events(
             ...     limit=10,
             ...     filter_dict={"status": ["PUBLISHED"]},
-            ...     sort=[{"fieldName": "scheduling.config.startDate", "order": "DESC"}]
+            ...     sort=[{"fieldName": "scheduling.config.startDate", "order": "DESC"}],
+            ...     fieldsets=["DETAILS", "TEXTS"]
             ... )
         """
         query_obj: Dict[str, Any] = {
@@ -83,10 +87,13 @@ class EventsAPI:
         if sort:
             query_obj["sort"] = sort
 
+        if fieldsets:
+            query_obj["fieldsets"] = fieldsets
+
         # Wrap in query object as required by API
         payload = {"query": query_obj}
 
-        logger.info(f"Querying events (limit={limit}, offset={offset})")
+        logger.info(f"Querying events (limit={limit}, offset={offset}, fieldsets={fieldsets})")
         return self.client.post(f"{self.base_path}/query", json=payload)
 
     def get_event(self, event_id: str) -> Dict[str, Any]:
@@ -335,7 +342,9 @@ class EventsAPI:
         self,
         filter_dict: Optional[Dict[str, Any]] = None,
         sort: Optional[List[Dict[str, str]]] = None,
-        max_results: Optional[int] = None
+        max_results: Optional[int] = None,
+        fieldsets: Optional[List[str]] = None,
+        enrich_descriptions: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Helper method to retrieve all events using pagination.
@@ -346,21 +355,62 @@ class EventsAPI:
             filter_dict: Filter criteria
             sort: Sort criteria
             max_results: Maximum number of results to return (None = all)
+            fieldsets: Fieldsets to include (e.g., ["DETAILS", "TEXTS"])
+            enrich_descriptions: If True, re-fetch each event individually to get full descriptions.
+                               This is slower but works around a Wix API quirk where bulk queries
+                               return empty description nodes for some events.
 
         Returns:
             List of all events
 
         Example:
+            >>> # Fast but may have incomplete descriptions
             >>> all_events = events_api.get_all_events(
             ...     filter_dict={"status": ["PUBLISHED"]},
             ...     max_results=1000
             ... )
+            >>>
+            >>> # Slower but guarantees complete descriptions
+            >>> all_events = events_api.get_all_events(
+            ...     enrich_descriptions=True
+            ... )
         """
-        return paginate_query(
+        events = paginate_query(
             query_func=self.query_events,
             response_key="events",
             limit=100,
             max_results=max_results,
             filter_dict=filter_dict,
-            sort=sort
+            sort=sort,
+            fieldsets=fieldsets
         )
+
+        # If enrich_descriptions is True, re-query each event individually with a filter
+        # This works around Wix API returning empty description nodes in bulk queries
+        if enrich_descriptions:
+            logger.info(f"Enriching {len(events)} events with full descriptions...")
+            enriched_events = []
+
+            for i, event in enumerate(events):
+                event_id = event.get('id')
+
+                # Re-query with a filter to get full description
+                result = self.query_events(
+                    limit=1,
+                    filter_dict={'id': {'$eq': event_id}},
+                    fieldsets=fieldsets
+                )
+
+                if result.get('events'):
+                    enriched_events.append(result['events'][0])
+                else:
+                    # Fallback to original event if re-query fails
+                    enriched_events.append(event)
+
+                if (i + 1) % 10 == 0:
+                    logger.info(f"Enriched {i + 1}/{len(events)} events")
+
+            logger.info(f"Enrichment complete: {len(enriched_events)} events")
+            return enriched_events
+
+        return events
