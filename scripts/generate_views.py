@@ -1,17 +1,15 @@
 """
-Generate enriched CSV views by joining contacts, events, and guests data.
+Generate a unified ticket sales view from Wix data.
 
-This script reads the latest processed CSVs and creates joined "views" for 
-pivot table analysis and exploration. It does NOT make any API calls.
+Creates a single CSV that joins guests + contacts + events, similar to an 
+Eventbrite export. Each row represents one ticket/guest with enriched 
+contact info (name, email) and event info (title, date, estimated price).
 
-Views generated:
-- guests_enriched.csv: Guests with full contact and event details
-- contact_event_history.csv: Each contact's complete event attendance
-- event_attendance.csv: Events with attendance counts and attendee details
+This makes the Wix data comparable to the Eventbrite export format.
 
 Usage:
     python scripts/generate_views.py
-    # Or with custom input/output directories:
+    # Or with custom directories:
     python scripts/generate_views.py --input-dir data/processed --output-dir data/views
 """
 
@@ -22,7 +20,6 @@ from datetime import datetime
 import pandas as pd
 import glob
 
-# Project root for default paths
 PROJECT_ROOT = Path(__file__).parent.parent
 
 
@@ -32,7 +29,6 @@ def find_latest_csv(directory: Path, prefix: str) -> Path | None:
     files = glob.glob(pattern)
     if not files:
         return None
-    # Sort by modification time, newest first
     return Path(sorted(files, key=lambda x: Path(x).stat().st_mtime, reverse=True)[0])
 
 
@@ -72,228 +68,122 @@ def load_data(input_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame
     return contacts, events, guests
 
 
-def create_guests_enriched(
+def create_ticket_sales_view(
     guests: pd.DataFrame, 
     contacts: pd.DataFrame, 
     events: pd.DataFrame
 ) -> pd.DataFrame:
     """
-    Create enriched guests view with contact and event details.
+    Create a ticket-sales view comparable to Eventbrite export format.
     
-    Each row is a guest record with their contact info and the event they attended.
+    Each row is a guest/ticket with:
+    - Order info (order_number, ticket_number, order_date)
+    - Buyer info (first_name, last_name, email) from contacts
+    - Event info (title, date, time, location) from events
+    - Pricing info (estimated ticket price) from events
     """
-    # Select relevant columns from contacts
-    contact_cols = [
-        'contact_id', 'primary_email', 'first_name', 'last_name', 'full_name',
-        'is_member', 'member_status', 'source_type', 'created_date'
-    ]
-    # Only include columns that exist
-    contact_cols = [c for c in contact_cols if c in contacts.columns]
-    contacts_subset = contacts[contact_cols].copy()
-    contacts_subset = contacts_subset.add_prefix('contact_')
-    contacts_subset = contacts_subset.rename(columns={'contact_contact_id': 'contact_id'})
     
-    # Select relevant columns from events
+    # --- Prepare contacts data ---
+    contact_cols = ['contact_id', 'first_name', 'last_name', 'full_name', 'primary_email']
+    contacts_subset = contacts[[c for c in contact_cols if c in contacts.columns]].copy()
+    
+    # --- Prepare events data ---
     event_cols = [
-        'event_id', 'title', 'status', 'short_description', 'category_names',
-        'primary_category', 'start_date', 'start_time', 'start_datetime',
-        'end_date', 'end_time', 'location_name', 'location_city',
-        'lowest_price', 'highest_price', 'currency'
+        'event_id', 'title', 'start_date', 'start_time', 'end_date', 'end_time',
+        'timezone', 'location_name', 'location_address', 'location_city',
+        'currency', 'lowest_price', 'highest_price', 'primary_category', 'status'
     ]
-    event_cols = [c for c in event_cols if c in events.columns]
-    events_subset = events[event_cols].copy()
-    events_subset = events_subset.add_prefix('event_')
-    events_subset = events_subset.rename(columns={'event_event_id': 'event_id'})
+    events_subset = events[[c for c in event_cols if c in events.columns]].copy()
     
-    # Join guests with contacts
-    enriched = guests.merge(
+    # Calculate average ticket price as estimate (midpoint of lowest/highest)
+    if 'lowest_price' in events_subset.columns and 'highest_price' in events_subset.columns:
+        events_subset['estimated_ticket_price'] = (
+            (events_subset['lowest_price'].fillna(0) + events_subset['highest_price'].fillna(0)) / 2
+        ).round(2)
+    
+    # --- Join guests with contacts ---
+    result = guests.merge(
         contacts_subset,
         on='contact_id',
-        how='left'
+        how='left',
+        suffixes=('', '_contact')
     )
     
-    # Join with events
-    enriched = enriched.merge(
+    # --- Join with events ---
+    result = result.merge(
         events_subset,
         on='event_id',
-        how='left'
+        how='left',
+        suffixes=('', '_event')
     )
     
-    # Reorder columns for better usability
-    # Guest info first, then contact, then event
-    guest_cols = [c for c in guests.columns if c in enriched.columns]
-    contact_cols_final = [c for c in enriched.columns if c.startswith('contact_')]
-    event_cols_final = [c for c in enriched.columns if c.startswith('event_')]
+    # --- Select and rename columns to match Eventbrite-like format ---
+    # Use contact name/email if guest name/email is empty
+    result['buyer_first_name'] = result['first_name_contact'].fillna(result.get('first_name', ''))
+    result['buyer_last_name'] = result['last_name_contact'].fillna(result.get('last_name', ''))
+    result['buyer_email'] = result['primary_email'].fillna(result.get('email', ''))
     
-    ordered_cols = guest_cols + contact_cols_final + event_cols_final
-    # Add any remaining columns
-    remaining = [c for c in enriched.columns if c not in ordered_cols]
-    ordered_cols.extend(remaining)
+    # Build the final output with comparable columns
+    output_cols = {
+        # Order/Ticket info
+        'order_number': 'order_number',
+        'ticket_number': 'ticket_number', 
+        'guest_id': 'guest_id',
+        'guest_type': 'guest_type',
+        'created_date': 'order_date',
+        'created_time': 'order_time',
+        
+        # Buyer info (from contacts)
+        'buyer_first_name': 'buyer_first_name',
+        'buyer_last_name': 'buyer_last_name',
+        'buyer_email': 'buyer_email',
+        
+        # Event info
+        'title': 'event_name',
+        'event_id': 'event_id',
+        'start_date': 'event_start_date',
+        'start_time': 'event_start_time',
+        'end_date': 'event_end_date',
+        'end_time': 'event_end_time',
+        'timezone': 'event_timezone',
+        'location_name': 'event_location',
+        'location_city': 'event_city',
+        'primary_category': 'event_category',
+        'status': 'event_status',
+        
+        # Pricing
+        'currency': 'currency',
+        'lowest_price': 'ticket_price_low',
+        'highest_price': 'ticket_price_high',
+        'estimated_ticket_price': 'estimated_ticket_price',
+        
+        # Attendance
+        'attendance_status': 'attendance_status',
+        'checked_in': 'checked_in',
+        
+        # Reference IDs for joins
+        'contact_id': 'contact_id',
+    }
     
-    return enriched[ordered_cols]
-
-
-def create_contact_event_history(
-    guests: pd.DataFrame,
-    contacts: pd.DataFrame,
-    events: pd.DataFrame
-) -> pd.DataFrame:
-    """
-    Create a contact-centric view showing each contact's event history.
+    # Select columns that exist and rename
+    final_cols = {}
+    for old_col, new_col in output_cols.items():
+        if old_col in result.columns:
+            final_cols[old_col] = new_col
     
-    Each row is a contact with aggregated info about their event attendance.
-    """
-    # Get event titles mapped to event_id
-    event_titles = events.set_index('event_id')['title'].to_dict()
-    event_dates = events.set_index('event_id')['start_date'].to_dict()
-    event_categories = events.set_index('event_id')['primary_category'].to_dict()
+    output = result[list(final_cols.keys())].rename(columns=final_cols)
     
-    # Group guests by contact
-    contact_events = guests.groupby('contact_id').agg({
-        'event_id': list,
-        'guest_id': 'count',
-        'guest_type': lambda x: list(x.unique()),
-        'created_date': 'min',  # First attendance
-    }).reset_index()
+    # Sort by order date (most recent first), then by event
+    if 'order_date' in output.columns:
+        output = output.sort_values(['order_date', 'event_name'], ascending=[False, True])
     
-    contact_events.columns = [
-        'contact_id', 'event_ids', 'total_attendances', 
-        'guest_types', 'first_attendance_date'
-    ]
-    
-    # Add event count and event titles
-    contact_events['unique_events_count'] = contact_events['event_ids'].apply(
-        lambda x: len(set(x))
-    )
-    contact_events['event_titles'] = contact_events['event_ids'].apply(
-        lambda ids: '; '.join(set(event_titles.get(eid, 'Unknown') for eid in ids))
-    )
-    contact_events['event_categories'] = contact_events['event_ids'].apply(
-        lambda ids: '; '.join(set(str(event_categories.get(eid, '')) for eid in ids if event_categories.get(eid)))
-    )
-    
-    # Join with contact info
-    contact_cols = [
-        'contact_id', 'primary_email', 'first_name', 'last_name', 'full_name',
-        'is_member', 'member_status', 'source_type', 'created_date'
-    ]
-    contact_cols = [c for c in contact_cols if c in contacts.columns]
-    contacts_subset = contacts[contact_cols].copy()
-    
-    result = contacts_subset.merge(
-        contact_events,
-        on='contact_id',
-        how='left'
-    )
-    
-    # Fill NaN for contacts with no events
-    result['total_attendances'] = result['total_attendances'].fillna(0).astype(int)
-    result['unique_events_count'] = result['unique_events_count'].fillna(0).astype(int)
-    
-    # Sort by most active attendees first
-    result = result.sort_values('total_attendances', ascending=False)
-    
-    # Drop the event_ids list column (not useful in CSV)
-    result = result.drop(columns=['event_ids'], errors='ignore')
-    
-    return result
-
-
-def create_event_attendance(
-    guests: pd.DataFrame,
-    contacts: pd.DataFrame,
-    events: pd.DataFrame
-) -> pd.DataFrame:
-    """
-    Create an event-centric view showing attendance stats per event.
-    
-    Each row is an event with aggregated attendance information.
-    """
-    # Get contact names mapped to contact_id
-    contact_names = contacts.set_index('contact_id')['full_name'].to_dict()
-    contact_emails = contacts.set_index('contact_id')['primary_email'].to_dict()
-    
-    # Group guests by event
-    event_guests = guests.groupby('event_id').agg({
-        'contact_id': list,
-        'guest_id': 'count',
-        'guest_type': lambda x: dict(x.value_counts()),
-        'attendance_status': lambda x: dict(x.value_counts()) if x.notna().any() else {},
-    }).reset_index()
-    
-    event_guests.columns = [
-        'event_id', 'contact_ids', 'total_guests',
-        'guest_type_breakdown', 'attendance_status_breakdown'
-    ]
-    
-    # Calculate unique contacts and attendee names
-    event_guests['unique_contacts'] = event_guests['contact_ids'].apply(
-        lambda x: len(set(x))
-    )
-    event_guests['buyer_count'] = event_guests['guest_type_breakdown'].apply(
-        lambda x: x.get('BUYER', 0)
-    )
-    event_guests['ticket_holder_count'] = event_guests['guest_type_breakdown'].apply(
-        lambda x: x.get('TICKET_HOLDER', 0)
-    )
-    event_guests['attendee_names'] = event_guests['contact_ids'].apply(
-        lambda ids: '; '.join(
-            list(set(
-                contact_names.get(cid, 'Unknown') 
-                for cid in ids 
-                if contact_names.get(cid)
-            ))[:20]  # Limit to first 20 unique names
-        )
-    )
-    
-    # Join with event info
-    event_cols = [
-        'event_id', 'title', 'status', 'short_description', 'category_names',
-        'primary_category', 'start_date', 'start_time', 'start_datetime',
-        'end_date', 'location_name', 'location_city',
-        'lowest_price', 'highest_price', 'currency', 'sold_out'
-    ]
-    event_cols = [c for c in event_cols if c in events.columns]
-    events_subset = events[event_cols].copy()
-    
-    result = events_subset.merge(
-        event_guests,
-        on='event_id',
-        how='left'
-    )
-    
-    # Fill NaN for events with no guests
-    result['total_guests'] = result['total_guests'].fillna(0).astype(int)
-    result['unique_contacts'] = result['unique_contacts'].fillna(0).astype(int)
-    result['buyer_count'] = result['buyer_count'].fillna(0).astype(int)
-    result['ticket_holder_count'] = result['ticket_holder_count'].fillna(0).astype(int)
-    
-    # Sort by start date
-    result = result.sort_values('start_date', ascending=False)
-    
-    # Drop columns not useful in CSV
-    result = result.drop(
-        columns=['contact_ids', 'guest_type_breakdown', 'attendance_status_breakdown'],
-        errors='ignore'
-    )
-    
-    return result
-
-
-def save_view(df: pd.DataFrame, output_path: Path, name: str) -> None:
-    """Save a DataFrame to CSV with UTF-8 BOM encoding for Excel compatibility."""
-    # Ensure parent directory exists
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Save with UTF-8 BOM for Excel
-    df.to_csv(output_path, index=False, encoding='utf-8-sig')
-    print(f"  ✓ {name}: {len(df):,} rows → {output_path.name}")
+    return output
 
 
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Generate enriched CSV views from Wix data"
+        description="Generate unified ticket sales view from Wix data"
     )
     parser.add_argument(
         "--input-dir",
@@ -311,15 +201,14 @@ def parse_args():
 
 
 def main():
-    """Generate all enriched views."""
+    """Generate the ticket sales view."""
     args = parse_args()
     
-    # Set up directories
     input_dir = Path(args.input_dir) if args.input_dir else PROJECT_ROOT / "data" / "processed"
     output_dir = Path(args.output_dir) if args.output_dir else PROJECT_ROOT / "data" / "views"
     
     print("=" * 60)
-    print("GENERATING ENRICHED DATA VIEWS")
+    print("GENERATING TICKET SALES VIEW")
     print("=" * 60)
     print(f"\nInput:  {input_dir}")
     print(f"Output: {output_dir}\n")
@@ -328,43 +217,31 @@ def main():
         # Load data
         contacts, events, guests = load_data(input_dir)
         
-        # Generate timestamp for output files
+        # Create the unified view
+        print("\nCreating ticket sales view...")
+        ticket_sales = create_ticket_sales_view(guests, contacts, events)
+        
+        # Save output
+        output_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = output_dir / f"ticket_sales_{timestamp}.csv"
         
-        print("\nGenerating views...")
+        # Save with UTF-8 BOM for Excel compatibility
+        ticket_sales.to_csv(output_path, index=False, encoding='utf-8-sig')
         
-        # 1. Guests Enriched View
-        guests_enriched = create_guests_enriched(guests, contacts, events)
-        save_view(
-            guests_enriched,
-            output_dir / f"guests_enriched_{timestamp}.csv",
-            "Guests Enriched"
-        )
+        print(f"\n✓ Saved {len(ticket_sales):,} rows to {output_path.name}")
         
-        # 2. Contact Event History View
-        contact_history = create_contact_event_history(guests, contacts, events)
-        save_view(
-            contact_history,
-            output_dir / f"contact_event_history_{timestamp}.csv",
-            "Contact Event History"
-        )
-        
-        # 3. Event Attendance View
-        event_attendance = create_event_attendance(guests, contacts, events)
-        save_view(
-            event_attendance,
-            output_dir / f"event_attendance_{timestamp}.csv",
-            "Event Attendance"
-        )
+        # Show sample of columns
+        print(f"\nColumns in output ({len(ticket_sales.columns)}):")
+        for col in ticket_sales.columns:
+            print(f"  • {col}")
         
         print("\n" + "=" * 60)
-        print("VIEWS GENERATED SUCCESSFULLY")
+        print("VIEW GENERATED SUCCESSFULLY")
         print("=" * 60)
-        print(f"\nAll views saved to: {output_dir}")
-        print("\nViews created:")
-        print("  • guests_enriched - Each guest with contact + event details")
-        print("  • contact_event_history - Contacts with their event attendance")
-        print("  • event_attendance - Events with attendance counts")
+        print(f"\nOutput: {output_path}")
+        print("\nThis view can be compared with Eventbrite exports like:")
+        print("  data/other/invite_only_cleaned.csv")
         
         return 0
         
@@ -373,7 +250,7 @@ def main():
         print("\nMake sure you've run 'python scripts/pull_all.py' first.")
         return 1
     except Exception as e:
-        print(f"\n❌ Error generating views: {e}")
+        print(f"\n❌ Error generating view: {e}")
         import traceback
         traceback.print_exc()
         return 1
@@ -381,4 +258,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-
