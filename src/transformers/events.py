@@ -166,6 +166,15 @@ class EventsTransformer(BaseTransformer):
         transformed['google_calendar_url'] = calendar_urls.get('google')
         transformed['ics_calendar_url'] = calendar_urls.get('ics')
 
+        # Event page URL (merge base and path from API response)
+        event_page_url = event.get('eventPageUrl', {})
+        if event_page_url and isinstance(event_page_url, dict):
+            base = event_page_url.get('base', '')
+            path = event_page_url.get('path', '')
+            transformed['event_page_url'] = f"{base}{path}" if base else None
+        else:
+            transformed['event_page_url'] = event_page_url
+
         # Description (multiple sources for complete coverage)
         # 1. Short description (already captured above as 'short_description')
 
