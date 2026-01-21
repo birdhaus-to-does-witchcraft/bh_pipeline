@@ -43,7 +43,7 @@ class RSVPAPI:
     def query_rsvps(
         self,
         event_id: Optional[str] = None,
-        limit: int = 100,
+        limit: int = 1000,
         offset: int = 0,
         filter_dict: Optional[Dict[str, Any]] = None,
         sort: Optional[List[Dict[str, str]]] = None
@@ -55,7 +55,7 @@ class RSVPAPI:
 
         Args:
             event_id: Filter by specific event ID
-            limit: Number of RSVPs to return (default: 100)
+            limit: Number of RSVPs to return (default: 1000)
             offset: Offset for pagination (default: 0)
             filter_dict: Additional filter criteria
             sort: Sort criteria (e.g., [{"fieldName": "createdDate", "order": "ASC"}])
@@ -94,7 +94,7 @@ class RSVPAPI:
     def search_rsvps(
         self,
         search: Dict[str, Any],
-        limit: int = 100,
+        limit: int = 1000,
         offset: int = 0
     ) -> Dict[str, Any]:
         """
@@ -104,7 +104,7 @@ class RSVPAPI:
 
         Args:
             search: Search query with filters and aggregations
-            limit: Number of RSVPs to return (default: 100)
+            limit: Number of RSVPs to return (default: 1000)
             offset: Offset for pagination (default: 0)
 
         Returns:
@@ -346,7 +346,7 @@ class RSVPAPI:
         """
         all_rsvps = []
         offset = 0
-        limit = 100
+        limit = 1000
 
         logger.info(f"Retrieving all RSVPs for event {event_id} with pagination")
 

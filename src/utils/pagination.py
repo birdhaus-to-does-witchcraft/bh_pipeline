@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 def paginate_query(
     query_func: Callable,
     response_key: str,
-    limit: int = 100,
+    limit: int = 1000,
     max_results: Optional[int] = None,
     **query_kwargs
 ) -> List[Dict[str, Any]]:
@@ -27,7 +27,7 @@ def paginate_query(
     Args:
         query_func: The query function to call (e.g., events_api.query_events)
         response_key: The key in the response containing the items (e.g., "events", "guests")
-        limit: Number of items per page (default: 100)
+        limit: Number of items per page (default: 1000)
         max_results: Maximum total results to return (None = all)
         **query_kwargs: Additional keyword arguments to pass to query_func
 
@@ -69,13 +69,14 @@ def paginate_query(
             logger.info(f"Reached max_results limit: {max_results}")
             break
 
-        # Check pagination metadata
+        # Check pagination metadata - some APIs use pagingMetadata, others use top-level total
         paging_metadata = response.get("pagingMetadata", {})
-        count = paging_metadata.get("count", 0)
-        total = paging_metadata.get("total")  # May be None for some APIs (e.g., Guests)
+        count = paging_metadata.get("count", len(items))  # Fallback to actual items count
+        # Check for total in pagingMetadata first, then top-level response (orders API)
+        total = paging_metadata.get("total") or response.get("total")
 
         # No more items if we got zero results
-        if count == 0:
+        if len(items) == 0:
             logger.info(f"Retrieved all items: {len(all_items)} total")
             break
 
@@ -85,7 +86,7 @@ def paginate_query(
             break
 
         # For APIs without total, continue until we get fewer items than requested
-        if count < limit:
+        if len(items) < limit:
             logger.info(f"Retrieved all items: {len(all_items)} total (partial page indicates end)")
             break
 

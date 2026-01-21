@@ -50,7 +50,7 @@ class OrdersAPI:
 
     def list_orders(
         self,
-        limit: int = 100,
+        limit: int = 400,
         offset: int = 0
     ) -> Dict[str, Any]:
         """
@@ -62,7 +62,7 @@ class OrdersAPI:
         Response uses total/offset/limit format (not pagingMetadata).
 
         Args:
-            limit: Number of orders to return (default: 100)
+            limit: Number of orders to return (max 400, default: 400)
             offset: Offset for pagination (default: 0)
 
         Returns:
@@ -194,7 +194,7 @@ class OrdersAPI:
         return paginate_query(
             query_func=query_func,
             response_key="orders",
-            limit=100,
+            limit=400,  # Wix API max limit for orders endpoint
             max_results=max_results
         )
 

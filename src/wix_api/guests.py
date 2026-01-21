@@ -46,7 +46,7 @@ class GuestsAPI:
     def query_guests(
         self,
         event_id: Optional[str] = None,
-        limit: int = 100,
+        limit: int = 1000,
         offset: int = 0,
         filter_dict: Optional[Dict[str, Any]] = None,
         sort: Optional[List[Dict[str, str]]] = None,
@@ -62,7 +62,7 @@ class GuestsAPI:
 
         Args:
             event_id: Filter by specific event ID
-            limit: Number of guests to return (default: 100)
+            limit: Number of guests to return (default: 1000)
             offset: Offset for pagination (default: 0)
             filter_dict: Additional filter criteria
             sort: Sort criteria (e.g., [{"fieldName": "createdDate", "order": "ASC"}])
@@ -160,7 +160,7 @@ class GuestsAPI:
         return paginate_query(
             query_func=self.query_guests,
             response_key="guests",
-            limit=100,
+            limit=1000,
             max_results=max_results,
             event_id=event_id,
             include_details=include_details
@@ -193,7 +193,7 @@ class GuestsAPI:
         return paginate_query(
             query_func=self.query_guests,
             response_key="guests",
-            limit=100,
+            limit=1000,
             max_results=max_results,
             filter_dict=filter_dict,
             include_details=include_details

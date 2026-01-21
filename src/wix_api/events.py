@@ -44,7 +44,7 @@ class EventsAPI:
 
     def query_events(
         self,
-        limit: int = 100,
+        limit: int = 1000,
         offset: int = 0,
         filter_dict: Optional[Dict[str, Any]] = None,
         sort: Optional[List[Dict[str, str]]] = None,
@@ -56,7 +56,7 @@ class EventsAPI:
         Endpoint: POST /events/v3/events/query
 
         Args:
-            limit: Number of events to return (default: 100)
+            limit: Number of events to return (default: 1000)
             offset: Offset for pagination (default: 0)
             filter_dict: Filter criteria (e.g., {"status": ["PUBLISHED"]})
             sort: Sort criteria (e.g., [{"fieldName": "scheduling.config.startDate", "order": "ASC"}])
@@ -135,7 +135,7 @@ class EventsAPI:
     def list_events_by_category(
         self,
         category_id: str,
-        limit: int = 100,
+        limit: int = 1000,
         offset: int = 0
     ) -> Dict[str, Any]:
         """
@@ -145,7 +145,7 @@ class EventsAPI:
 
         Args:
             category_id: The category ID
-            limit: Number of events to return (default: 100)
+            limit: Number of events to return (default: 1000)
             offset: Offset for pagination (default: 0)
 
         Returns:
@@ -378,7 +378,7 @@ class EventsAPI:
         events = paginate_query(
             query_func=self.query_events,
             response_key="events",
-            limit=100,
+            limit=1000,
             max_results=max_results,
             filter_dict=filter_dict,
             sort=sort,

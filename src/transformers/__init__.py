@@ -7,6 +7,7 @@ from transformers.events import EventsTransformer
 from transformers.contacts import ContactsTransformer
 from transformers.guests import GuestsTransformer
 from transformers.transactions import TransactionsTransformer
+from transformers.event_orders import EventOrdersTransformer
 
 __all__ = [
     'BaseTransformer',
@@ -14,4 +15,5 @@ __all__ = [
     'ContactsTransformer',
     'GuestsTransformer',
     'TransactionsTransformer',
+    'EventOrdersTransformer',
 ]

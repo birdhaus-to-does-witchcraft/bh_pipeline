@@ -37,7 +37,7 @@ logging:
 # Pipeline Settings (for future use)
 pipeline:
   # Batch sizes for queries
-  batch_size: 100
+  batch_size: 1000
 
   # Entity types to extract (for future filtering)
   entities:

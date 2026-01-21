@@ -6,7 +6,7 @@ This script extracts complete datasets for all entity types:
 - Event Guests
 - Contacts
 - Order Summaries (Sales Data)
-- Transactions/Orders
+- Event Orders
 
 All data is transformed and saved to timestamped CSV files with UTF-8 BOM encoding
 for Excel compatibility.
@@ -22,7 +22,6 @@ import sys
 import argparse
 from pathlib import Path
 from datetime import datetime
-from collections import defaultdict
 
 # Add src to path for imports
 project_root = Path(__file__).parent.parent
@@ -38,11 +37,11 @@ from transformers.events import EventsTransformer
 from transformers.contacts import ContactsTransformer
 from transformers.guests import GuestsTransformer
 from transformers.order_summaries import OrderSummariesTransformer
-from transformers.transactions import TransactionsTransformer
+from transformers.event_orders import EventOrdersTransformer
 from transformers.base import BaseTransformer
 
 
-def extract_events(client, output_dir, logger):
+def extract_events(client, output_dir, logger, timestamp):
     """Extract and transform all events."""
     logger.info("=" * 60)
     logger.info("Extracting Events")
@@ -66,7 +65,6 @@ def extract_events(client, output_dir, logger):
             return None
 
         # Transform and save
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = output_dir / f"events_{timestamp}.csv"
 
         EventsTransformer.save_to_csv(events, str(output_path))
@@ -79,7 +77,7 @@ def extract_events(client, output_dir, logger):
         return None
 
 
-def extract_contacts(client, output_dir, logger):
+def extract_contacts(client, output_dir, logger, timestamp):
     """Extract and transform all contacts."""
     logger.info("=" * 60)
     logger.info("Extracting Contacts")
@@ -95,7 +93,6 @@ def extract_contacts(client, output_dir, logger):
             return None
 
         # Transform and save
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = output_dir / f"contacts_{timestamp}.csv"
 
         ContactsTransformer.save_to_csv(contacts, str(output_path))
@@ -108,7 +105,7 @@ def extract_contacts(client, output_dir, logger):
         return None
 
 
-def extract_guests(client, output_dir, logger):
+def extract_guests(client, output_dir, logger, timestamp):
     """Extract and transform all guests."""
     logger.info("=" * 60)
     logger.info("Extracting Guests")
@@ -127,7 +124,6 @@ def extract_guests(client, output_dir, logger):
         transformed_guests = GuestsTransformer.transform_guests(guests)
 
         # Save guests
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = output_dir / f"guests_{timestamp}.csv"
         BaseTransformer.save_to_csv(transformed_guests, str(output_path))
         logger.info(f"Saved {len(transformed_guests)} guests to {output_path.name}")
@@ -139,7 +135,7 @@ def extract_guests(client, output_dir, logger):
         return None
 
 
-def extract_order_summaries(client, output_dir, events, logger):
+def extract_order_summaries(client, output_dir, events, logger, timestamp):
     """Extract and transform order summaries (sales data per event)."""
     logger.info("=" * 60)
     logger.info("Extracting Order Summaries (Sales Data)")
@@ -173,7 +169,6 @@ def extract_order_summaries(client, output_dir, events, logger):
         logger.info(f"{events_with_sales} events have sales data")
 
         # Transform and save
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = output_dir / f"order_summaries_{timestamp}.csv"
 
         OrderSummariesTransformer.save_to_csv(events, summary_responses, str(output_path))
@@ -186,63 +181,33 @@ def extract_order_summaries(client, output_dir, events, logger):
         return None
 
 
-def extract_transactions(client, output_dir, logger):
-    """Extract and transform transactions/orders."""
+def extract_event_orders(client, output_dir, logger, timestamp):
+    """Extract and transform event orders (individual ticket purchases)."""
     logger.info("=" * 60)
-    logger.info("Extracting Transactions")
+    logger.info("Extracting Event Orders")
     logger.info("=" * 60)
 
     try:
-        # Fetch orders
-        logger.info("Fetching orders...")
-        response = client.post('/ecom/v1/orders/search', json={
-            'search': {'paging': {'limit': 100}}
-        })
-        orders = response.get('orders', [])
-        total_count = response.get('totalCount', 'unknown')
-
-        logger.info(f"Retrieved {len(orders)} orders (Total: {total_count})")
+        # Use OrdersAPI to fetch all event orders
+        orders_api = OrdersAPI(client)
+        logger.info("Fetching all event orders with pagination...")
+        orders = orders_api.get_all_orders()
+        logger.info(f"Retrieved {len(orders)} event orders")
 
         if not orders:
-            logger.warning("No orders found")
+            logger.warning("No event orders found")
             return None
 
-        # Fetch transactions for orders
-        logger.info(f"Fetching transactions for {len(orders)} orders...")
-        order_ids = [o.get('id') for o in orders if o.get('id')]
+        # Transform and save using EventOrdersTransformer
+        output_path = output_dir / f"event_orders_{timestamp}.csv"
 
-        transactions_by_order = defaultdict(list)
-
-        if order_ids:
-            try:
-                txn_response = client.post('/ecom/v1/orders/transactions/list',
-                                          json={'orderIds': order_ids})
-                transactions = txn_response.get('transactions', [])
-
-                for txn in transactions:
-                    order_id = txn.get('orderId')
-                    if order_id:
-                        transactions_by_order[order_id].append(txn)
-
-                logger.info(f"Retrieved {len(transactions)} transactions")
-            except Exception as e:
-                logger.warning(f"Could not fetch transactions: {e}")
-
-        # Transform and save
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = output_dir / f"transactions_{timestamp}.csv"
-
-        TransactionsTransformer.save_to_csv(
-            orders,
-            str(output_path),
-            transactions_by_order=dict(transactions_by_order) if transactions_by_order else None
-        )
-        logger.info(f"Saved {len(orders)} transactions to {output_path.name}")
+        EventOrdersTransformer.save_to_csv(orders, str(output_path))
+        logger.info(f"Saved {len(orders)} event orders to {output_path.name}")
 
         return orders
 
     except Exception as e:
-        logger.error(f"Transactions extraction failed: {e}", exc_info=True)
+        logger.error(f"Event orders extraction failed: {e}", exc_info=True)
         return None
 
 
@@ -270,6 +235,9 @@ def main():
     logger.info("STARTING FULL DATA EXTRACTION FROM WIX APIs")
     logger.info("=" * 60)
 
+    # Create single timestamp for this run - ensures all files have matching timestamps
+    run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     try:
         # Create output directory
         if args.output_dir:
@@ -279,39 +247,37 @@ def main():
 
         output_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Output directory: {output_dir}")
+        logger.info(f"Run timestamp: {run_timestamp}")
 
-        # Initialize API client
+        # Initialize API client with context manager for guaranteed cleanup
         logger.info("Initializing Wix API client...")
-        client = WixAPIClient.from_env()
-        logger.info("Client initialized successfully")
+        with WixAPIClient.from_env() as client:
+            logger.info("Client initialized successfully")
 
-        # Extract all data types
-        results = {}
+            # Extract all data types
+            results = {}
 
-        # Events (needed for order summaries)
-        events = extract_events(client, output_dir, logger)
-        results['events'] = events is not None
+            # Events (needed for order summaries)
+            events = extract_events(client, output_dir, logger, run_timestamp)
+            results['events'] = events is not None
 
-        # Contacts (needed for guest enrichment)
-        contacts = extract_contacts(client, output_dir, logger)
-        results['contacts'] = contacts is not None
+            # Contacts (needed for guest enrichment)
+            contacts = extract_contacts(client, output_dir, logger, run_timestamp)
+            results['contacts'] = contacts is not None
 
-        # Guests
-        guests = extract_guests(client, output_dir, logger)
-        results['guests'] = guests is not None
+            # Guests
+            guests = extract_guests(client, output_dir, logger, run_timestamp)
+            results['guests'] = guests is not None
 
-        # Order Summaries (uses events)
-        order_summaries = extract_order_summaries(client, output_dir, events, logger)
-        results['order_summaries'] = order_summaries is not None
+            # Order Summaries (uses events)
+            order_summaries = extract_order_summaries(client, output_dir, events, logger, run_timestamp)
+            results['order_summaries'] = order_summaries is not None
 
-        # Transactions
-        transactions = extract_transactions(client, output_dir, logger)
-        results['transactions'] = transactions is not None
+            # Event Orders (individual ticket purchases)
+            event_orders = extract_event_orders(client, output_dir, logger, run_timestamp)
+            results['event_orders'] = event_orders is not None
 
-        # Clean up
-        client.close()
-
-        # Summary
+        # Summary (client is now closed)
         logger.info("=" * 60)
         logger.info("EXTRACTION SUMMARY")
         logger.info("=" * 60)
