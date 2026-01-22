@@ -22,6 +22,7 @@ import sys
 import argparse
 from pathlib import Path
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Add src to path for imports
 project_root = Path(__file__).parent.parent
@@ -148,22 +149,36 @@ def extract_order_summaries(client, output_dir, events, logger, timestamp):
 
         orders_api = OrdersAPI(client)
 
-        # Get sales summary for each event
-        logger.info(f"Fetching sales summaries for {len(events)} events...")
-        summary_responses = []
-        events_with_sales = 0
-
-        for event in events:
+        # Helper function for parallel fetching
+        def fetch_summary(event):
             try:
-                summary = orders_api.get_summary_by_event(event.get('id'))
-                summary_responses.append(summary)
-
-                if summary.get('sales', []):
-                    events_with_sales += 1
-
+                return orders_api.get_summary_by_event(event.get('id'))
             except Exception:
-                # Event may not have sales data
-                summary_responses.append({'sales': []})
+                return {'sales': []}
+
+        # Fetch summaries in parallel using ThreadPoolExecutor
+        # Using 10 workers to stay well under Wix's 100 calls/minute rate limit
+        logger.info(f"Fetching sales summaries for {len(events)} events (parallel)...")
+        summary_responses = [None] * len(events)
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            # Submit all tasks and map futures to their index
+            future_to_idx = {
+                executor.submit(fetch_summary, event): i
+                for i, event in enumerate(events)
+            }
+
+            # Collect results as they complete
+            completed = 0
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                summary_responses[idx] = future.result()
+                completed += 1
+                if completed % 25 == 0:
+                    logger.info(f"  Progress: {completed}/{len(events)} summaries fetched")
+
+        # Count events with sales
+        events_with_sales = sum(1 for s in summary_responses if s.get('sales', []))
 
         logger.info(f"Retrieved summaries for {len(events)} events")
         logger.info(f"{events_with_sales} events have sales data")
