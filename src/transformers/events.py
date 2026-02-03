@@ -53,23 +53,27 @@ class EventsTransformer(BaseTransformer):
         # Date and time
         date_settings = event.get('dateAndTimeSettings', {})
 
+        # Get timezone for proper time conversion (Wix API returns UTC times)
+        timezone_id = date_settings.get('timeZoneId')
+
         # Extract date and time components using base class method
+        # Pass timezone to convert from UTC to local time
         start_datetime = date_settings.get('startDate')
         end_datetime = date_settings.get('endDate')
 
-        start_date, start_time = BaseTransformer.extract_date_and_time(start_datetime)
-        end_date, end_time = BaseTransformer.extract_date_and_time(end_datetime)
+        start_date, start_time = BaseTransformer.extract_date_and_time(start_datetime, timezone_id)
+        end_date, end_time = BaseTransformer.extract_date_and_time(end_datetime, timezone_id)
 
         transformed['start_date'] = start_date
         transformed['start_time'] = start_time
         transformed['end_date'] = end_date
         transformed['end_time'] = end_time
 
-        # Keep full datetime if needed for reference
+        # Keep full datetime (UTC) if needed for reference
         transformed['start_datetime'] = start_datetime
         transformed['end_datetime'] = end_datetime
 
-        transformed['timezone'] = date_settings.get('timeZoneId')
+        transformed['timezone'] = timezone_id
         transformed['recurrence_status'] = date_settings.get('recurrenceStatus')
 
         # Day of week extraction (based on actual calendar date)

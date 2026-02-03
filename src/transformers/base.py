@@ -5,7 +5,12 @@ Provides common functionality for transforming raw API data into clean, CSV-read
 """
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo  # Python < 3.9 fallback
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -57,25 +62,72 @@ class BaseTransformer:
         return df
 
     @staticmethod
-    def extract_date_and_time(datetime_str: str) -> tuple:
+    def extract_date_and_time(
+        datetime_str: str,
+        timezone_id: Optional[str] = None
+    ) -> Tuple[Optional[str], Optional[str]]:
         """
         Extract date and time components from ISO datetime string.
+        
+        Converts UTC times (indicated by 'Z' suffix) to the specified local timezone.
+        If no timezone is provided, returns the raw UTC time.
 
         Args:
-            datetime_str: ISO datetime string (e.g., "2025-10-12T16:00:00Z")
+            datetime_str: ISO datetime string (e.g., "2025-10-12T17:00:00Z")
+            timezone_id: IANA timezone ID (e.g., "America/New_York") for conversion.
+                        If provided, UTC times will be converted to this timezone.
 
         Returns:
-            Tuple of (date, time) strings, or (None, None) if invalid
+            Tuple of (date, time) strings in local timezone, or (None, None) if invalid
+            
+        Example:
+            >>> # UTC 17:00 converts to EST 12:00
+            >>> extract_date_and_time("2025-10-12T17:00:00Z", "America/New_York")
+            ('2025-10-12', '12:00:00')
         """
         if not datetime_str or 'T' not in datetime_str:
             return (datetime_str, None)
 
         try:
-            date_part, time_part = datetime_str.split('T')
-            # Remove 'Z' timezone indicator
-            time_part = time_part.replace('Z', '')
+            # Check if this is a UTC time (ends with 'Z')
+            is_utc = datetime_str.endswith('Z')
+            
+            # Parse the datetime string
+            clean_str = datetime_str.replace('Z', '')
+            
+            # Handle potential fractional seconds
+            if '.' in clean_str:
+                dt = datetime.strptime(clean_str, '%Y-%m-%dT%H:%M:%S.%f')
+            else:
+                dt = datetime.strptime(clean_str, '%Y-%m-%dT%H:%M:%S')
+            
+            # Convert from UTC to local timezone if timezone provided and time is UTC
+            if is_utc and timezone_id:
+                try:
+                    utc_tz = ZoneInfo('UTC')
+                    local_tz = ZoneInfo(timezone_id)
+                    
+                    # Make the datetime timezone-aware (UTC)
+                    dt_utc = dt.replace(tzinfo=utc_tz)
+                    
+                    # Convert to local timezone
+                    dt_local = dt_utc.astimezone(local_tz)
+                    
+                    # Extract date and time from converted datetime
+                    date_part = dt_local.strftime('%Y-%m-%d')
+                    time_part = dt_local.strftime('%H:%M:%S')
+                    
+                    return (date_part, time_part)
+                except Exception as tz_error:
+                    logger.warning(f"Timezone conversion failed for '{timezone_id}': {tz_error}. Using UTC.")
+            
+            # No timezone conversion - return raw parsed values
+            date_part = dt.strftime('%Y-%m-%d')
+            time_part = dt.strftime('%H:%M:%S')
             return (date_part, time_part)
-        except Exception:
+            
+        except Exception as e:
+            logger.warning(f"Failed to parse datetime '{datetime_str}': {e}")
             return (datetime_str, None)
 
     @staticmethod

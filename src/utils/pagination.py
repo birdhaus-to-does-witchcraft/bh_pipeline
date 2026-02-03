@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 def paginate_query(
     query_func: Callable,
     response_key: str,
-    limit: int = 1000,
+    limit: int = 100,
     max_results: Optional[int] = None,
     **query_kwargs
 ) -> List[Dict[str, Any]]:
@@ -27,7 +27,7 @@ def paginate_query(
     Args:
         query_func: The query function to call (e.g., events_api.query_events)
         response_key: The key in the response containing the items (e.g., "events", "guests")
-        limit: Number of items per page (default: 1000)
+        limit: Number of items per page (default: 100)
         max_results: Maximum total results to return (None = all)
         **query_kwargs: Additional keyword arguments to pass to query_func
 

@@ -44,7 +44,7 @@ class EventsAPI:
 
     def query_events(
         self,
-        limit: int = 1000,
+        limit: int = 100,
         offset: int = 0,
         filter_dict: Optional[Dict[str, Any]] = None,
         sort: Optional[List[Dict[str, str]]] = None,
@@ -56,7 +56,7 @@ class EventsAPI:
         Endpoint: POST /events/v3/events/query
 
         Args:
-            limit: Number of events to return (default: 1000)
+            limit: Number of events to return per page (default: 100, max ~100)
             offset: Offset for pagination (default: 0)
             filter_dict: Filter criteria (e.g., {"status": ["PUBLISHED"]})
             sort: Sort criteria (e.g., [{"fieldName": "scheduling.config.startDate", "order": "ASC"}])
@@ -378,7 +378,7 @@ class EventsAPI:
         events = paginate_query(
             query_func=self.query_events,
             response_key="events",
-            limit=1000,
+            limit=100,  # Wix Events API has max ~100 per page; was 1000 causing 503 errors
             max_results=max_results,
             filter_dict=filter_dict,
             sort=sort,
