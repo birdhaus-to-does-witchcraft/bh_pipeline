@@ -157,19 +157,12 @@ class WixAPIClient:
         Build full URL from endpoint path.
 
         Args:
-            endpoint: API endpoint path (e.g., "/v3/events/query") OR an absolute
-                URL (e.g., "https://manage.wix.com/automations-service/v2/...").
-                Absolute URLs are returned unchanged so callers can target alternate
-                Wix hosts (some endpoints don't live on www.wixapis.com).
+            endpoint: API endpoint path (e.g., "/v3/events/query")
 
         Returns:
             Full URL string
         """
-        # Pass absolute URLs through unchanged
-        if endpoint.startswith('http://') or endpoint.startswith('https://'):
-            return endpoint
-
-        # Ensure relative endpoint starts with /
+        # Ensure endpoint starts with /
         if not endpoint.startswith('/'):
             endpoint = '/' + endpoint
 

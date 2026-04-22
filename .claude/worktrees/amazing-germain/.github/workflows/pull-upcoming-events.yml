@@ -1,0 +1,36 @@
+name: Pull Upcoming Events
+
+on:
+  schedule:
+    - cron: '0 17 * * 0'  # Every Sunday at 12 PM Eastern (5 PM UTC)
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  pull-events:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Pull upcoming events
+        env:
+          WIX_API_KEY: ${{ secrets.WIX_API_KEY }}
+          WIX_ACCOUNT_ID: ${{ secrets.WIX_ACCOUNT_ID }}
+          WIX_SITE_ID: ${{ secrets.WIX_SITE_ID }}
+        run: python scripts/pull_upcoming_events.py --output-dir ./output
+      
+      - name: Upload CSV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: upcoming-events-${{ github.run_id }}
+          path: ./output/*.csv
+          retention-days: 90

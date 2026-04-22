@@ -10,7 +10,14 @@ from wix_api.events import EventsAPI
 from wix_api.guests import GuestsAPI
 from wix_api.rsvp import RSVPAPI
 from wix_api.contacts import ContactsAPI
+from wix_api.orders import OrdersAPI
+from wix_api.tickets import TicketsAPI
+from wix_api.ticket_definitions import TicketDefinitionsAPI
 from wix_api.transactions import TransactionsAPI
+from wix_api.members import MembersAPI
+from wix_api.forms import FormsAPI
+from wix_api.coupons import CouponsAPI
+from wix_api.automations import AutomationsAPI
 
 __all__ = [
     "WixAPIClient",
@@ -18,5 +25,12 @@ __all__ = [
     "GuestsAPI",
     "RSVPAPI",
     "ContactsAPI",
+    "OrdersAPI",
+    "TicketsAPI",
+    "TicketDefinitionsAPI",
     "TransactionsAPI",
+    "MembersAPI",
+    "FormsAPI",
+    "CouponsAPI",
+    "AutomationsAPI",
 ]

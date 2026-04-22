@@ -1,0 +1,64 @@
+# Wix API Data Pipeline Configuration
+# This file provides an alternative to environment variables for configuration
+# To use: load_config(yaml_file="config/pipeline_config.yaml")
+
+# Wix API Settings
+wix_api:
+  api_key: "YOUR_API_KEY_HERE"  # Override with actual API key or use .env
+  account_id: "YOUR_ACCOUNT_ID"  # Optional
+  site_id: "YOUR_SITE_ID"        # Optional
+  base_url: "https://www.wixapis.com"
+
+# Rate Limiting Settings
+rate_limit:
+  max_calls: 100  # Maximum API calls per period
+  period: 60      # Time period in seconds (100 calls per 60 seconds)
+
+# Retry Settings
+retry:
+  max_attempts: 3  # Maximum retry attempts for failed requests
+  min_wait: 4      # Minimum wait time between retries (seconds)
+  max_wait: 10     # Maximum wait time between retries (seconds)
+
+# Data Storage Paths
+data_paths:
+  base_path: "/mnt/c/Users/saaku/the-lab/technologist/birdhaus_projects/birdhaus_data"
+  # These are auto-generated from base_path if not specified:
+  # raw_path: "{base_path}/raw"
+  # processed_path: "{base_path}/processed"
+  # archive_path: "{base_path}/archive"
+  # metadata_path: "{base_path}/metadata"
+
+# Logging Configuration
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_dir: "logs"
+
+# Pipeline Settings (for future use)
+pipeline:
+  # Batch sizes for queries
+  batch_size: 1000
+
+  # Entity types to extract (for future filtering)
+  entities:
+    - events
+    - guests
+    - tickets
+    - contacts
+    - transactions
+    - rsvps
+
+  # Date range filters (optional)
+  # start_date: "2024-01-01"
+  # end_date: "2025-12-31"
+
+  # Data quality settings
+  data_quality:
+    check_nulls: true
+    check_row_count: true
+    row_count_threshold: 0.1  # Warn if row count changes by more than 10%
+
+  # Archive settings
+  archive:
+    enabled: true
+    retention_days: 730  # Keep archives for 2 years

@@ -8,6 +8,13 @@ from transformers.contacts import ContactsTransformer
 from transformers.guests import GuestsTransformer
 from transformers.transactions import TransactionsTransformer
 from transformers.event_orders import EventOrdersTransformer
+from transformers.members import MembersTransformer
+from transformers.form_submissions import FormSubmissionsTransformer
+from transformers.coupons import CouponsTransformer
+from transformers.automations import AutomationsTransformer
+from transformers.rsvps import RSVPsTransformer
+from transformers.tickets import TicketsTransformer
+from transformers.ticket_definitions import TicketDefinitionsTransformer
 
 __all__ = [
     'BaseTransformer',
@@ -16,4 +23,11 @@ __all__ = [
     'GuestsTransformer',
     'TransactionsTransformer',
     'EventOrdersTransformer',
+    'MembersTransformer',
+    'FormSubmissionsTransformer',
+    'CouponsTransformer',
+    'AutomationsTransformer',
+    'RSVPsTransformer',
+    'TicketsTransformer',
+    'TicketDefinitionsTransformer',
 ]

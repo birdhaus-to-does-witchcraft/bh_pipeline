@@ -1,19 +1,23 @@
 """
 Full data extraction script - pulls all data from Wix APIs.
 
-This script extracts complete datasets for all entity types:
-- Events
-- Event Guests
-- Contacts
-- Order Summaries (Sales Data)
-- Event Orders
+Pipeline architecture:
+- Bronze layer: raw JSON dumps to data/raw/<entity>/year=Y/month=M/day=D/snapshot_<ts>.json
+- Silver layer: flattened CSVs in data/processed/<entity>_<ts>.csv (UTF-8 BOM for Excel)
+- Per-run manifest at data/processed/manifest_<ts>.json with row counts, durations, errors
 
-All data is transformed and saved to timestamped CSV files with UTF-8 BOM encoding
-for Excel compatibility.
+Entities pulled:
+- Events (TICKETING + RSVP)
+- Event Guests, RSVPs
+- Tickets (joined with Ticket Definitions for fee_type, sale_status, sold_count)
+- Ticket Definitions (with SALES_DETAILS fieldset)
+- Contacts, Site Members
+- Order Summaries (per event), Event Orders
+- Form Submissions (wide AND long format)
+- Coupons (active + expired), Automations
 
 Usage:
     python scripts/pull_all.py
-    # Or with custom output directory:
     python scripts/pull_all.py --output-dir /path/to/output
     # Or if installed: wix-pull-all
 """
@@ -29,213 +33,615 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
 from utils.logger import setup_logging
+from utils.raw_storage import dump_raw
+from utils.manifest import RunManifest
 from wix_api.client import WixAPIClient
 from wix_api.events import EventsAPI
 from wix_api.contacts import ContactsAPI
 from wix_api.guests import GuestsAPI
 from wix_api.orders import OrdersAPI
+from wix_api.tickets import TicketsAPI
+from wix_api.ticket_definitions import TicketDefinitionsAPI
+from wix_api.rsvp import RSVPAPI
+from wix_api.members import MembersAPI
+from wix_api.forms import FormsAPI
+from wix_api.coupons import CouponsAPI
+from wix_api.automations import AutomationsAPI
 from transformers.events import EventsTransformer
 from transformers.contacts import ContactsTransformer
 from transformers.guests import GuestsTransformer
 from transformers.order_summaries import OrderSummariesTransformer
 from transformers.event_orders import EventOrdersTransformer
+from transformers.members import MembersTransformer
+from transformers.form_submissions import FormSubmissionsTransformer
+from transformers.coupons import CouponsTransformer
+from transformers.automations import AutomationsTransformer
+from transformers.rsvps import RSVPsTransformer
+from transformers.tickets import TicketsTransformer
+from transformers.ticket_definitions import TicketDefinitionsTransformer
 from transformers.base import BaseTransformer
 
 
-def extract_events(client, output_dir, logger, timestamp):
-    """Extract and transform all events."""
+def extract_events(client, output_dir, raw_dir, manifest, logger, timestamp):
+    """Extract all events (TICKETING + RSVP). Returns (ticketing, rsvp) tuple."""
     logger.info("=" * 60)
     logger.info("Extracting Events")
     logger.info("=" * 60)
 
-    try:
-        events_api = EventsAPI(client)
-        all_events = events_api.get_all_events()
-        logger.info(f"Retrieved {len(all_events)} total events")
+    with manifest.timer("events") as timer:
+        try:
+            events_api = EventsAPI(client)
+            all_events = events_api.get_all_events()
+            logger.info(f"Retrieved {len(all_events)} total events")
 
-        # Filter out RSVP events - keep only TICKETING events
-        events = [
-            e for e in all_events
-            if e.get('registration', {}).get('type') == 'TICKETING'
-        ]
-        rsvp_count = len(all_events) - len(events)
-        logger.info(f"Filtered to {len(events)} TICKETING events (excluded {rsvp_count} RSVP events)")
+            raw_path = dump_raw("events", all_events, timestamp, raw_dir)
 
-        if not events:
-            logger.warning("No events found")
-            return None
+            ticketing_events = [
+                e for e in all_events
+                if e.get('registration', {}).get('type') == 'TICKETING'
+            ]
+            rsvp_events = [
+                e for e in all_events
+                if e.get('registration', {}).get('type') == 'RSVP'
+            ]
+            other_count = len(all_events) - len(ticketing_events) - len(rsvp_events)
+            logger.info(
+                f"Split: {len(ticketing_events)} TICKETING, "
+                f"{len(rsvp_events)} RSVP, {other_count} other"
+            )
 
-        # Transform and save
-        output_path = output_dir / f"events_{timestamp}.csv"
+            extra_paths = {}
+            csv_path = None
 
-        EventsTransformer.save_to_csv(events, str(output_path))
-        logger.info(f"Saved {len(events)} events to {output_path.name}")
+            if ticketing_events:
+                csv_path = output_dir / f"events_{timestamp}.csv"
+                EventsTransformer.save_to_csv(ticketing_events, str(csv_path))
+                logger.info(f"Saved {len(ticketing_events)} ticketing events to {csv_path.name}")
 
-        return events
+            if rsvp_events:
+                rsvp_csv_path = output_dir / f"rsvp_events_{timestamp}.csv"
+                EventsTransformer.save_to_csv(rsvp_events, str(rsvp_csv_path))
+                logger.info(f"Saved {len(rsvp_events)} RSVP events to {rsvp_csv_path.name}")
+                extra_paths["rsvp_events_csv"] = rsvp_csv_path
 
-    except Exception as e:
-        logger.error(f"Events extraction failed: {e}", exc_info=True)
-        return None
+            if not ticketing_events and not rsvp_events:
+                timer.record(status="skipped", row_count=0, raw_path=raw_path)
+                return None, None
+
+            timer.record(
+                status="success",
+                row_count=len(ticketing_events) + len(rsvp_events),
+                raw_path=raw_path,
+                csv_path=csv_path,
+                extra_paths=extra_paths,
+            )
+            return ticketing_events, rsvp_events
+
+        except Exception as e:
+            logger.error(f"Events extraction failed: {e}", exc_info=True)
+            timer.record(status="failed", error=str(e))
+            return None, None
 
 
-def extract_contacts(client, output_dir, logger, timestamp):
+def extract_contacts(client, output_dir, raw_dir, manifest, logger, timestamp):
     """Extract and transform all contacts."""
     logger.info("=" * 60)
     logger.info("Extracting Contacts")
     logger.info("=" * 60)
 
-    try:
-        contacts_api = ContactsAPI(client)
-        contacts = contacts_api.get_all_contacts()
-        logger.info(f"Retrieved {len(contacts)} contacts")
+    with manifest.timer("contacts") as timer:
+        try:
+            contacts_api = ContactsAPI(client)
+            contacts = contacts_api.get_all_contacts()
+            logger.info(f"Retrieved {len(contacts)} contacts")
 
-        if not contacts:
-            logger.warning("No contacts found")
+            raw_path = dump_raw("contacts", contacts, timestamp, raw_dir)
+
+            if not contacts:
+                logger.warning("No contacts found")
+                timer.record(status="skipped", row_count=0, raw_path=raw_path)
+                return None
+
+            csv_path = output_dir / f"contacts_{timestamp}.csv"
+            ContactsTransformer.save_to_csv(contacts, str(csv_path))
+            logger.info(f"Saved {len(contacts)} contacts to {csv_path.name}")
+
+            timer.record(
+                status="success",
+                row_count=len(contacts),
+                raw_path=raw_path,
+                csv_path=csv_path,
+            )
+            return contacts
+
+        except Exception as e:
+            logger.error(f"Contacts extraction failed: {e}", exc_info=True)
+            timer.record(status="failed", error=str(e))
             return None
 
-        # Transform and save
-        output_path = output_dir / f"contacts_{timestamp}.csv"
 
-        ContactsTransformer.save_to_csv(contacts, str(output_path))
-        logger.info(f"Saved {len(contacts)} contacts to {output_path.name}")
-
-        return contacts
-
-    except Exception as e:
-        logger.error(f"Contacts extraction failed: {e}", exc_info=True)
-        return None
-
-
-def extract_guests(client, output_dir, logger, timestamp):
-    """Extract and transform all guests."""
+def extract_members(client, output_dir, raw_dir, manifest, logger, timestamp):
+    """Extract and transform all site members."""
     logger.info("=" * 60)
-    logger.info("Extracting Guests")
+    logger.info("Extracting Site Members")
     logger.info("=" * 60)
 
-    try:
-        guests_api = GuestsAPI(client)
-        guests = guests_api.get_all_guests()
-        logger.info(f"Retrieved {len(guests)} guests")
+    with manifest.timer("members") as timer:
+        try:
+            members_api = MembersAPI(client)
+            members = members_api.get_all_members()
+            logger.info(f"Retrieved {len(members)} members")
 
-        if not guests:
-            logger.warning("No guests found - this is normal if no event registrations exist")
+            raw_path = dump_raw("members", members, timestamp, raw_dir)
+
+            if not members:
+                logger.warning("No members found")
+                timer.record(status="skipped", row_count=0, raw_path=raw_path)
+                return None
+
+            csv_path = output_dir / f"members_{timestamp}.csv"
+            MembersTransformer.save_to_csv(members, str(csv_path))
+            logger.info(f"Saved {len(members)} members to {csv_path.name}")
+
+            timer.record(
+                status="success",
+                row_count=len(members),
+                raw_path=raw_path,
+                csv_path=csv_path,
+            )
+            return members
+
+        except Exception as e:
+            logger.error(f"Members extraction failed: {e}", exc_info=True)
+            timer.record(status="failed", error=str(e))
             return None
 
-        # Transform guests
-        transformed_guests = GuestsTransformer.transform_guests(guests)
 
-        # Save guests
-        output_path = output_dir / f"guests_{timestamp}.csv"
-        BaseTransformer.save_to_csv(transformed_guests, str(output_path))
-        logger.info(f"Saved {len(transformed_guests)} guests to {output_path.name}")
+def extract_guests(
+    client, output_dir, raw_dir, manifest, logger, timestamp, rsvp_event_ids=None
+):
+    """
+    Extract and transform all guests, excluding any tied to RSVP-type events.
 
-        return transformed_guests
+    The Guests API V2 returns guests for both TICKETING and RSVP events.
+    Since RSVP events are intentionally not extracted (slow per-event loop),
+    we filter their guests out of the silver CSV. The bronze raw JSON still
+    contains the full unfiltered API response for completeness.
+    """
+    logger.info("=" * 60)
+    logger.info("Extracting Guests (excluding RSVP-event guests)")
+    logger.info("=" * 60)
 
-    except Exception as e:
-        logger.error(f"Guests extraction failed: {e}", exc_info=True)
-        return None
+    rsvp_event_ids = set(rsvp_event_ids or [])
+
+    with manifest.timer("guests") as timer:
+        try:
+            guests_api = GuestsAPI(client)
+            guests = guests_api.get_all_guests()
+            logger.info(f"Retrieved {len(guests)} total guests")
+
+            # Bronze layer keeps the FULL response (lossless)
+            raw_path = dump_raw("guests", guests, timestamp, raw_dir)
+
+            # Silver layer excludes guests for RSVP events
+            if rsvp_event_ids:
+                ticketing_guests = [
+                    g for g in guests if g.get('eventId') not in rsvp_event_ids
+                ]
+                excluded = len(guests) - len(ticketing_guests)
+                logger.info(
+                    f"Filtered out {excluded} guests tied to {len(rsvp_event_ids)} RSVP events; "
+                    f"keeping {len(ticketing_guests)} ticketing-event guests for silver CSV"
+                )
+            else:
+                ticketing_guests = guests
+
+            if not ticketing_guests:
+                logger.warning("No ticketing-event guests found")
+                timer.record(status="skipped", row_count=0, raw_path=raw_path)
+                return None
+
+            transformed_guests = GuestsTransformer.transform_guests(ticketing_guests)
+
+            csv_path = output_dir / f"guests_{timestamp}.csv"
+            BaseTransformer.save_to_csv(transformed_guests, str(csv_path))
+            logger.info(f"Saved {len(transformed_guests)} guests to {csv_path.name}")
+
+            timer.record(
+                status="success",
+                row_count=len(transformed_guests),
+                raw_path=raw_path,
+                csv_path=csv_path,
+            )
+            return transformed_guests
+
+        except Exception as e:
+            logger.error(f"Guests extraction failed: {e}", exc_info=True)
+            timer.record(status="failed", error=str(e))
+            return None
 
 
-def extract_order_summaries(client, output_dir, events, logger, timestamp):
-    """Extract and transform order summaries (sales data per event)."""
+def extract_rsvps(client, output_dir, raw_dir, rsvp_events, manifest, logger, timestamp):
+    """Extract RSVPs for all RSVP-type events."""
+    logger.info("=" * 60)
+    logger.info("Extracting RSVPs")
+    logger.info("=" * 60)
+
+    with manifest.timer("rsvps") as timer:
+        try:
+            if not rsvp_events:
+                logger.warning("No RSVP events provided - skipping RSVP extraction")
+                timer.record(status="skipped", row_count=0)
+                return None
+
+            rsvp_api = RSVPAPI(client)
+            all_rsvps = []
+
+            for event in rsvp_events:
+                event_id = event.get('id')
+                try:
+                    rsvps = rsvp_api.get_all_rsvps_for_event(event_id)
+                    logger.info(
+                        f"Retrieved {len(rsvps)} RSVPs for event {event.get('title', event_id)}"
+                    )
+                    all_rsvps.extend(rsvps)
+                except Exception as e:
+                    logger.warning(f"Could not fetch RSVPs for event {event_id}: {e}")
+
+            logger.info(
+                f"Retrieved {len(all_rsvps)} total RSVPs across {len(rsvp_events)} events"
+            )
+
+            raw_path = dump_raw("rsvps", all_rsvps, timestamp, raw_dir)
+
+            if not all_rsvps:
+                logger.warning("No RSVPs found")
+                timer.record(status="skipped", row_count=0, raw_path=raw_path)
+                return None
+
+            csv_path = output_dir / f"rsvps_{timestamp}.csv"
+            RSVPsTransformer.save_to_csv(all_rsvps, str(csv_path))
+            logger.info(f"Saved {len(all_rsvps)} RSVPs to {csv_path.name}")
+
+            timer.record(
+                status="success",
+                row_count=len(all_rsvps),
+                raw_path=raw_path,
+                csv_path=csv_path,
+            )
+            return all_rsvps
+
+        except Exception as e:
+            logger.error(f"RSVPs extraction failed: {e}", exc_info=True)
+            timer.record(status="failed", error=str(e))
+            return None
+
+
+def extract_ticket_definitions(client, output_dir, raw_dir, manifest, logger, timestamp):
+    """Extract ticket definitions (templates with pricing, fee_type, sale_status)."""
+    logger.info("=" * 60)
+    logger.info("Extracting Ticket Definitions")
+    logger.info("=" * 60)
+
+    with manifest.timer("ticket_definitions") as timer:
+        try:
+            defs_api = TicketDefinitionsAPI(client)
+            definitions = defs_api.get_all_ticket_definitions(fieldsets=["SALES_DETAILS"])
+            logger.info(f"Retrieved {len(definitions)} ticket definitions")
+
+            raw_path = dump_raw("ticket_definitions", definitions, timestamp, raw_dir)
+
+            if not definitions:
+                logger.warning("No ticket definitions found")
+                timer.record(status="skipped", row_count=0, raw_path=raw_path)
+                return None
+
+            csv_path = output_dir / f"ticket_definitions_{timestamp}.csv"
+            TicketDefinitionsTransformer.save_to_csv(definitions, str(csv_path))
+            logger.info(f"Saved {len(definitions)} ticket definitions to {csv_path.name}")
+
+            timer.record(
+                status="success",
+                row_count=len(definitions),
+                raw_path=raw_path,
+                csv_path=csv_path,
+            )
+            return definitions
+
+        except Exception as e:
+            logger.error(f"Ticket definitions extraction failed: {e}", exc_info=True)
+            timer.record(status="failed", error=str(e))
+            return None
+
+
+def extract_tickets(
+    client, output_dir, raw_dir, ticket_definitions, manifest, logger, timestamp
+):
+    """Extract sold tickets, joined with their ticket definitions."""
+    logger.info("=" * 60)
+    logger.info("Extracting Tickets")
+    logger.info("=" * 60)
+
+    with manifest.timer("tickets") as timer:
+        try:
+            tickets_api = TicketsAPI(client)
+            tickets = tickets_api.get_all_tickets()
+            logger.info(f"Retrieved {len(tickets)} tickets")
+
+            raw_path = dump_raw("tickets", tickets, timestamp, raw_dir)
+
+            if not tickets:
+                logger.warning("No tickets found")
+                timer.record(status="skipped", row_count=0, raw_path=raw_path)
+                return None
+
+            # Build definitions lookup for join columns (def_fee_type, def_sale_status, etc.)
+            defs_by_id = {}
+            if ticket_definitions:
+                defs_by_id = {d.get('id'): d for d in ticket_definitions if d.get('id')}
+                logger.info(f"Built definitions lookup with {len(defs_by_id)} entries")
+
+            csv_path = output_dir / f"tickets_{timestamp}.csv"
+            TicketsTransformer.save_to_csv(
+                tickets, str(csv_path), definitions_lookup=defs_by_id
+            )
+            logger.info(f"Saved {len(tickets)} tickets to {csv_path.name}")
+
+            timer.record(
+                status="success",
+                row_count=len(tickets),
+                raw_path=raw_path,
+                csv_path=csv_path,
+            )
+            return tickets
+
+        except Exception as e:
+            logger.error(f"Tickets extraction failed: {e}", exc_info=True)
+            timer.record(status="failed", error=str(e))
+            return None
+
+
+def extract_order_summaries(
+    client, output_dir, raw_dir, events, manifest, logger, timestamp
+):
+    """Extract per-event sales summaries (parallel)."""
     logger.info("=" * 60)
     logger.info("Extracting Order Summaries (Sales Data)")
     logger.info("=" * 60)
 
-    try:
-        if not events:
-            logger.warning("No events provided - cannot extract order summaries")
+    with manifest.timer("order_summaries") as timer:
+        try:
+            if not events:
+                logger.warning("No events provided - cannot extract order summaries")
+                timer.record(status="skipped", row_count=0)
+                return None
+
+            orders_api = OrdersAPI(client)
+
+            def fetch_summary(event):
+                try:
+                    return orders_api.get_summary_by_event(event.get('id'))
+                except Exception:
+                    return {'sales': []}
+
+            logger.info(f"Fetching sales summaries for {len(events)} events (parallel)...")
+            summary_responses = [None] * len(events)
+
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                future_to_idx = {
+                    executor.submit(fetch_summary, event): i
+                    for i, event in enumerate(events)
+                }
+
+                completed = 0
+                for future in as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    summary_responses[idx] = future.result()
+                    completed += 1
+                    if completed % 25 == 0:
+                        logger.info(f"  Progress: {completed}/{len(events)} summaries fetched")
+
+            events_with_sales = sum(1 for s in summary_responses if s.get('sales', []))
+            logger.info(f"Retrieved summaries for {len(events)} events")
+            logger.info(f"{events_with_sales} events have sales data")
+
+            # Bronze: dump raw summary responses paired with event id
+            raw_payload = [
+                {"event_id": e.get('id'), "summary": s}
+                for e, s in zip(events, summary_responses)
+            ]
+            raw_path = dump_raw("order_summaries", raw_payload, timestamp, raw_dir)
+
+            csv_path = output_dir / f"order_summaries_{timestamp}.csv"
+            OrderSummariesTransformer.save_to_csv(events, summary_responses, str(csv_path))
+            logger.info(f"Saved order summaries to {csv_path.name}")
+
+            timer.record(
+                status="success",
+                row_count=len(events),
+                raw_path=raw_path,
+                csv_path=csv_path,
+            )
+            return summary_responses
+
+        except Exception as e:
+            logger.error(f"Order summaries extraction failed: {e}", exc_info=True)
+            timer.record(status="failed", error=str(e))
             return None
 
-        orders_api = OrdersAPI(client)
 
-        # Helper function for parallel fetching
-        def fetch_summary(event):
-            try:
-                return orders_api.get_summary_by_event(event.get('id'))
-            except Exception:
-                return {'sales': []}
-
-        # Fetch summaries in parallel using ThreadPoolExecutor
-        # Using 10 workers to stay well under Wix's 100 calls/minute rate limit
-        logger.info(f"Fetching sales summaries for {len(events)} events (parallel)...")
-        summary_responses = [None] * len(events)
-
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            # Submit all tasks and map futures to their index
-            future_to_idx = {
-                executor.submit(fetch_summary, event): i
-                for i, event in enumerate(events)
-            }
-
-            # Collect results as they complete
-            completed = 0
-            for future in as_completed(future_to_idx):
-                idx = future_to_idx[future]
-                summary_responses[idx] = future.result()
-                completed += 1
-                if completed % 25 == 0:
-                    logger.info(f"  Progress: {completed}/{len(events)} summaries fetched")
-
-        # Count events with sales
-        events_with_sales = sum(1 for s in summary_responses if s.get('sales', []))
-
-        logger.info(f"Retrieved summaries for {len(events)} events")
-        logger.info(f"{events_with_sales} events have sales data")
-
-        # Transform and save
-        output_path = output_dir / f"order_summaries_{timestamp}.csv"
-
-        OrderSummariesTransformer.save_to_csv(events, summary_responses, str(output_path))
-        logger.info(f"Saved order summaries to {output_path.name}")
-
-        return summary_responses
-
-    except Exception as e:
-        logger.error(f"Order summaries extraction failed: {e}", exc_info=True)
-        return None
-
-
-def extract_event_orders(client, output_dir, logger, timestamp):
-    """Extract and transform event orders (individual ticket purchases)."""
+def extract_event_orders(client, output_dir, raw_dir, manifest, logger, timestamp):
+    """Extract individual ticket purchases (event orders)."""
     logger.info("=" * 60)
     logger.info("Extracting Event Orders")
     logger.info("=" * 60)
 
-    try:
-        # Use OrdersAPI to fetch all event orders
-        orders_api = OrdersAPI(client)
-        logger.info("Fetching all event orders with pagination...")
-        orders = orders_api.get_all_orders()
-        logger.info(f"Retrieved {len(orders)} event orders")
+    with manifest.timer("event_orders") as timer:
+        try:
+            orders_api = OrdersAPI(client)
+            logger.info("Fetching all event orders with pagination...")
+            orders = orders_api.get_all_orders()
+            logger.info(f"Retrieved {len(orders)} event orders")
 
-        if not orders:
-            logger.warning("No event orders found")
+            raw_path = dump_raw("event_orders", orders, timestamp, raw_dir)
+
+            if not orders:
+                logger.warning("No event orders found")
+                timer.record(status="skipped", row_count=0, raw_path=raw_path)
+                return None
+
+            csv_path = output_dir / f"event_orders_{timestamp}.csv"
+            EventOrdersTransformer.save_to_csv(orders, str(csv_path))
+            logger.info(f"Saved {len(orders)} event orders to {csv_path.name}")
+
+            timer.record(
+                status="success",
+                row_count=len(orders),
+                raw_path=raw_path,
+                csv_path=csv_path,
+            )
+            return orders
+
+        except Exception as e:
+            logger.error(f"Event orders extraction failed: {e}", exc_info=True)
+            timer.record(status="failed", error=str(e))
             return None
 
-        # Transform and save using EventOrdersTransformer
-        output_path = output_dir / f"event_orders_{timestamp}.csv"
 
-        EventOrdersTransformer.save_to_csv(orders, str(output_path))
-        logger.info(f"Saved {len(orders)} event orders to {output_path.name}")
+def extract_form_submissions(client, output_dir, raw_dir, manifest, logger, timestamp):
+    """Extract form submissions, save BOTH wide and long-format CSVs."""
+    logger.info("=" * 60)
+    logger.info("Extracting Form Submissions")
+    logger.info("=" * 60)
 
-        return orders
+    with manifest.timer("form_submissions") as timer:
+        try:
+            forms_api = FormsAPI(client)
+            submissions = forms_api.get_all_submissions_for_namespaces()
+            logger.info(f"Retrieved {len(submissions)} total form submissions")
 
-    except Exception as e:
-        logger.error(f"Event orders extraction failed: {e}", exc_info=True)
-        return None
+            raw_path = dump_raw("form_submissions", submissions, timestamp, raw_dir)
+
+            if not submissions:
+                logger.warning("No form submissions found")
+                timer.record(status="skipped", row_count=0, raw_path=raw_path)
+                return None
+
+            # Wide format (one row per submission, dynamic field_* columns)
+            wide_path = output_dir / f"form_submissions_{timestamp}.csv"
+            FormSubmissionsTransformer.save_to_csv(submissions, str(wide_path))
+
+            # Long format (one row per submission field, stable schema)
+            long_path = output_dir / f"form_submissions_long_{timestamp}.csv"
+            FormSubmissionsTransformer.save_to_csv_long(submissions, str(long_path))
+            logger.info(
+                f"Saved {len(submissions)} form submissions to {wide_path.name} (wide) "
+                f"and {long_path.name} (long)"
+            )
+
+            timer.record(
+                status="success",
+                row_count=len(submissions),
+                raw_path=raw_path,
+                csv_path=wide_path,
+                extra_paths={"long_csv": long_path},
+            )
+            return submissions
+
+        except Exception as e:
+            logger.error(f"Form submissions extraction failed: {e}", exc_info=True)
+            timer.record(status="failed", error=str(e))
+            return None
+
+
+def extract_coupons(client, output_dir, raw_dir, manifest, logger, timestamp):
+    """Extract all coupons (active + expired)."""
+    logger.info("=" * 60)
+    logger.info("Extracting Coupons")
+    logger.info("=" * 60)
+
+    with manifest.timer("coupons") as timer:
+        try:
+            coupons_api = CouponsAPI(client)
+            coupons = coupons_api.get_all_coupons(include_expired=True)
+            logger.info(f"Retrieved {len(coupons)} coupons")
+
+            raw_path = dump_raw("coupons", coupons, timestamp, raw_dir)
+
+            if not coupons:
+                logger.warning("No coupons found")
+                timer.record(status="skipped", row_count=0, raw_path=raw_path)
+                return None
+
+            csv_path = output_dir / f"coupons_{timestamp}.csv"
+            CouponsTransformer.save_to_csv(coupons, str(csv_path))
+            logger.info(f"Saved {len(coupons)} coupons to {csv_path.name}")
+
+            timer.record(
+                status="success",
+                row_count=len(coupons),
+                raw_path=raw_path,
+                csv_path=csv_path,
+            )
+            return coupons
+
+        except Exception as e:
+            logger.error(f"Coupons extraction failed: {e}", exc_info=True)
+            timer.record(status="failed", error=str(e))
+            return None
+
+
+def extract_automations(client, output_dir, raw_dir, manifest, logger, timestamp):
+    """Extract all automation configurations."""
+    logger.info("=" * 60)
+    logger.info("Extracting Automations")
+    logger.info("=" * 60)
+
+    with manifest.timer("automations") as timer:
+        try:
+            automations_api = AutomationsAPI(client)
+            automations = automations_api.get_all_automations()
+            logger.info(f"Retrieved {len(automations)} automations")
+
+            raw_path = dump_raw("automations", automations, timestamp, raw_dir)
+
+            if not automations:
+                logger.warning("No automations found")
+                timer.record(status="skipped", row_count=0, raw_path=raw_path)
+                return None
+
+            csv_path = output_dir / f"automations_{timestamp}.csv"
+            AutomationsTransformer.save_to_csv(automations, str(csv_path))
+            logger.info(f"Saved {len(automations)} automations to {csv_path.name}")
+
+            timer.record(
+                status="success",
+                row_count=len(automations),
+                raw_path=raw_path,
+                csv_path=csv_path,
+            )
+            return automations
+
+        except Exception as e:
+            logger.error(f"Automations extraction failed: {e}", exc_info=True)
+            timer.record(status="failed", error=str(e))
+            return None
 
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Extract all data from Wix APIs"
-    )
+    parser = argparse.ArgumentParser(description="Extract all data from Wix APIs")
     parser.add_argument(
         "--output-dir",
         type=str,
         default=None,
-        help="Output directory for CSV files (default: data/processed)"
+        help="Output directory for processed CSV files (default: data/processed)",
+    )
+    parser.add_argument(
+        "--raw-dir",
+        type=str,
+        default=None,
+        help="Output directory for raw JSON dumps / bronze layer (default: data/raw)",
     )
     return parser.parse_args()
 
@@ -244,81 +650,131 @@ def main():
     """Main entry point for full data extraction."""
     args = parse_args()
 
-    # Set up logging
     logger = setup_logging(log_dir="logs", log_level="INFO")
     logger.info("=" * 60)
     logger.info("STARTING FULL DATA EXTRACTION FROM WIX APIs")
     logger.info("=" * 60)
 
-    # Create single timestamp for this run - ensures all files have matching timestamps
+    # Single timestamp = atomic snapshot identifier across all files
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     try:
-        # Create output directory
-        if args.output_dir:
-            output_dir = Path(args.output_dir)
-        else:
-            output_dir = project_root / "data" / "processed"
+        # Resolve output directories
+        output_dir = Path(args.output_dir) if args.output_dir else project_root / "data" / "processed"
+        raw_dir = Path(args.raw_dir) if args.raw_dir else project_root / "data" / "raw"
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Output directory: {output_dir}")
+        raw_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"Processed (silver) dir: {output_dir}")
+        logger.info(f"Raw (bronze) dir: {raw_dir}")
         logger.info(f"Run timestamp: {run_timestamp}")
+
+        # Initialize manifest for observability
+        manifest = RunManifest(run_timestamp, output_dir)
 
         # Initialize API client with context manager for guaranteed cleanup
         logger.info("Initializing Wix API client...")
         with WixAPIClient.from_env() as client:
             logger.info("Client initialized successfully")
 
-            # Extract all data types
-            results = {}
+            # Events (returns ticketing + RSVP for downstream use)
+            ticketing_events, rsvp_events = extract_events(
+                client, output_dir, raw_dir, manifest, logger, run_timestamp
+            )
 
-            # Events (needed for order summaries)
-            events = extract_events(client, output_dir, logger, run_timestamp)
-            results['events'] = events is not None
+            # Build set of RSVP event IDs - used to filter RSVP guests out of guests CSV
+            rsvp_event_ids = {e.get('id') for e in (rsvp_events or []) if e.get('id')}
 
-            # Contacts (needed for guest enrichment)
-            contacts = extract_contacts(client, output_dir, logger, run_timestamp)
-            results['contacts'] = contacts is not None
+            # Contacts
+            extract_contacts(client, output_dir, raw_dir, manifest, logger, run_timestamp)
 
-            # Guests
-            guests = extract_guests(client, output_dir, logger, run_timestamp)
-            results['guests'] = guests is not None
+            # Site Members
+            extract_members(client, output_dir, raw_dir, manifest, logger, run_timestamp)
 
-            # Order Summaries (uses events)
-            order_summaries = extract_order_summaries(client, output_dir, events, logger, run_timestamp)
-            results['order_summaries'] = order_summaries is not None
+            # Guests (filtered to exclude RSVP-event guests for performance)
+            extract_guests(
+                client, output_dir, raw_dir, manifest, logger, run_timestamp,
+                rsvp_event_ids=rsvp_event_ids,
+            )
 
-            # Event Orders (individual ticket purchases)
-            event_orders = extract_event_orders(client, output_dir, logger, run_timestamp)
-            results['event_orders'] = event_orders is not None
+            # NOTE: extract_rsvps() is intentionally NOT called.
+            # RSVP extraction loops per-event and is too slow for the use case.
+            # The RSVP events themselves are still captured in rsvp_events_<ts>.csv
+            # via extract_events() above. Re-enable here if RSVP attendance data
+            # is needed in the future.
 
-        # Summary (client is now closed)
+            # Ticket Definitions (fetched FIRST so tickets can join with them)
+            ticket_definitions = extract_ticket_definitions(
+                client, output_dir, raw_dir, manifest, logger, run_timestamp
+            )
+
+            # Tickets (joined with definitions)
+            extract_tickets(
+                client, output_dir, raw_dir, ticket_definitions, manifest, logger, run_timestamp
+            )
+
+            # Order Summaries (uses ticketing events)
+            extract_order_summaries(
+                client, output_dir, raw_dir, ticketing_events, manifest, logger, run_timestamp
+            )
+
+            # Event Orders (individual purchases)
+            extract_event_orders(
+                client, output_dir, raw_dir, manifest, logger, run_timestamp
+            )
+
+            # Form Submissions (both wide + long)
+            extract_form_submissions(
+                client, output_dir, raw_dir, manifest, logger, run_timestamp
+            )
+
+            # Coupons (active + expired)
+            extract_coupons(client, output_dir, raw_dir, manifest, logger, run_timestamp)
+
+            # Automations
+            extract_automations(client, output_dir, raw_dir, manifest, logger, run_timestamp)
+
+        # Save manifest
+        manifest_path = manifest.save()
+
+        # Print summary
         logger.info("=" * 60)
         logger.info("EXTRACTION SUMMARY")
         logger.info("=" * 60)
 
-        successful = [name for name, success in results.items() if success]
-        failed = [name for name, success in results.items() if not success]
+        successful = [name for name, e in manifest.entities.items() if e.status == "success"]
+        failed = [name for name, e in manifest.entities.items() if e.status == "failed"]
+        skipped = [name for name, e in manifest.entities.items() if e.status == "skipped"]
 
-        logger.info(f"Successful: {len(successful)}/{len(results)}")
+        logger.info(f"Successful: {len(successful)}/{len(manifest.entities)}")
         for name in successful:
-            logger.info(f"  ✓ {name.capitalize()}")
+            row_count = manifest.entities[name].row_count
+            logger.info(f"  ✓ {name} ({row_count} records)")
+
+        if skipped:
+            logger.info(f"Skipped: {len(skipped)}")
+            for name in skipped:
+                logger.info(f"  - {name}")
 
         if failed:
-            logger.warning(f"Skipped/Failed: {len(failed)}")
+            logger.warning(f"Failed: {len(failed)}")
             for name in failed:
-                logger.warning(f"  ✗ {name.capitalize()}")
+                err = manifest.entities[name].error or "unknown"
+                logger.warning(f"  ✗ {name}: {err}")
 
         logger.info("=" * 60)
-        logger.info(f"All files saved to: {output_dir}")
+        logger.info(f"Silver CSVs:  {output_dir}")
+        logger.info(f"Bronze JSONs: {raw_dir}")
+        logger.info(f"Manifest:     {manifest_path}")
         logger.info("=" * 60)
 
-        if all(results.values()):
+        if not failed:
             logger.info("Full data extraction completed successfully!")
             return 0
         else:
-            logger.warning("Some data types were skipped or failed")
-            return 0  # Still return success if at least some data was extracted
+            logger.warning(f"Completed with {len(failed)} failures - see manifest for details")
+            return 0  # Still return 0 since at least some data was extracted
 
     except Exception as e:
         logger.error(f"Data extraction failed: {e}", exc_info=True)

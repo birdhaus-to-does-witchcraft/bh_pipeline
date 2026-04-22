@@ -405,6 +405,71 @@ GET /events/v1/tickets/{ticketNumber}
 - `get_all_tickets()` -- All tickets with pagination
 - `get_tickets_by_event(event_id)` -- All tickets for one event
 
+### Schema Notes
+
+The Ticket V1 object does **not** include `fee` or `tax` fields directly. Those configurations live on the linked `TicketDefinition` and can be joined via `ticketDefinitionId`. See the Ticket Definitions section.
+
+Real Ticket fields: `ticketNumber`, `orderNumber`, `ticketDefinitionId`, `name`, `price` (Money), `free`, `policy`, `checkIn`, `orderStatus`, `orderArchived`, `archived`, `orderFullName`, `guestFullName`, `email`, `form` (FormResponse), `memberId`, `contactId`, `checkInUrl`, `ticketPdfUrl`.
+
+---
+
+## Ticket Definitions API V3
+
+**Wrapper**: `src/wix_api/ticket_definitions.py` -- `TicketDefinitionsAPI` class
+**Base path**: `/events/v3/ticket-definitions`
+**Docs**: https://dev.wix.com/docs/api-reference/business-solutions/events/event-management/ticket-definitions-v3
+
+A Ticket Definition is the reusable template for the ticket types available for a ticketed event. Sold Tickets reference a Definition by `ticketDefinitionId`. Definitions hold pricing, fee handling, sale period, and inventory limits.
+
+### Query Ticket Definitions
+
+```
+POST /events/v3/ticket-definitions/query
+```
+
+**Request body:**
+
+```json
+{
+  "query": {
+    "paging": { "limit": 100, "offset": 0 },
+    "filter": { "eventId": "..." },
+    "fieldsets": ["SALES_DETAILS"]
+  }
+}
+```
+
+The `SALES_DETAILS` fieldset adds `unsoldCount`, `soldCount`, `reservedCount`, `soldOut`, and `saleStatus` to each definition.
+
+**Response key**: `ticketDefinitions`
+
+### Get Ticket Definition
+
+```
+GET /events/v3/ticket-definitions/{id}
+```
+
+### Helpers
+
+- `get_all_ticket_definitions(fieldsets=["SALES_DETAILS"])` -- All definitions with pagination
+
+### Pricing Types
+
+- `STANDARD` -- Fixed price ticket
+- `DONATION` -- Buyer-chosen amount
+
+### Fee Types
+
+- `FEE_INCLUDED` -- Wix 2.5% fee absorbed by organizer (included in displayed price)
+- `FEE_ADDED_AT_CHECKOUT` -- Fee added on top at checkout
+- `NO_FEE` -- No service fee (e.g. free tickets)
+
+### Sale Statuses
+
+- `SALE_SCHEDULED` -- Sale not yet started
+- `SALE_STARTED` -- Currently on sale
+- `SALE_ENDED` -- Sale has ended
+
 ---
 
 ## eCommerce Transactions API V1
@@ -538,6 +603,129 @@ GET /events/v2/rsvps/summary
 ### Helpers
 
 - `get_all_rsvps_for_event(event_id)` -- Paginated retrieval for one event
+
+---
+
+## Members API V1
+
+**Wrapper**: `src/wix_api/members.py` -- `MembersAPI` class
+**Base path**: `/members/v1/members`
+**Docs**: https://dev.wix.com/docs/rest/crm/members-contacts/members/members/list-members
+
+Site members are users who have registered accounts on the site. Every Member is also a Contact, but not all Contacts are Members.
+
+### List Members
+
+```
+GET /members/v1/members
+```
+
+**Query params**: `fieldsets` (PUBLIC, EXTENDED, FULL), `paging.limit`, `paging.offset`
+
+**Response key**: `members`
+
+### Get Member
+
+```
+GET /members/v1/members/{memberId}
+```
+
+### Helpers
+
+- `get_all_members()` -- Paginated retrieval of all members (100 per page)
+
+---
+
+## Form Submissions API V4
+
+**Wrapper**: `src/wix_api/forms.py` -- `FormsAPI` class
+**Base path**: `/form-submission/v4/submissions/namespace/query`
+**Docs**: https://dev.wix.com/docs/rest/crm/forms/form-submissions/query-submissions-by-namespace
+
+Retrieves form submission data across different Wix apps. Uses cursor-based pagination.
+
+**Path quirk**: Wix's docs are inconsistent. The schema lists `/v4/submissions/namespace/query` but that returns 404. The cURL examples (and the working URL) include a `/form-submission` prefix: `https://www.wixapis.com/form-submission/v4/submissions/namespace/query`.
+
+### Query Submissions by Namespace
+
+```
+POST https://www.wixapis.com/form-submission/v4/submissions/namespace/query
+```
+
+**Required filter**: `namespace` (e.g., `"wix.form_app.form"`, `"wix.events_app.form"`)
+
+Uses cursor-based pagination with `cursorPaging` and `pagingMetadata.cursors.next`.
+
+**Response key**: `submissions`
+
+### Known Namespaces
+
+- `wix.form_app.form` -- Standalone Wix Forms
+- `wix.events_app.form` -- Event registration forms
+- `wix.bookings_app.form` -- Booking intake forms
+
+### Helpers
+
+- `get_all_submissions(namespace)` -- All submissions for one namespace
+- `get_all_submissions_for_namespaces()` -- All submissions across all known namespaces
+
+---
+
+## Coupons API V2
+
+**Wrapper**: `src/wix_api/coupons.py` -- `CouponsAPI` class
+**Base path**: `/stores/v2/coupons`
+**Docs**: https://dev.wix.com/docs/rest/business-management/marketing/coupons/coupons/query-coupons
+
+### Query Coupons
+
+```
+POST /stores/v2/coupons/query
+```
+
+**Note**: `filter` and `sort` parameters are JSON-encoded **strings**, not native objects.
+
+Example filter: `'{"expired":"true"}'` (string value, not boolean).
+
+Max 100 coupons per page.
+
+**Response key**: `coupons`
+
+### Get Coupon
+
+```
+GET /stores/v2/coupons/{id}
+```
+
+### Helpers
+
+- `get_all_coupons(include_expired=True)` -- Two-pass retrieval (active + expired)
+
+---
+
+## Automations API V2
+
+**Wrapper**: `src/wix_api/automations.py` -- `AutomationsAPI` class
+**Full URL**: `https://manage.wix.com/automations-service/v2/automations/query`
+**Docs**: https://dev.wix.com/docs/api-reference/business-management/automations/automations/automations-v2/query-automations
+
+Returns automation configurations (triggers, actions, status). Only returns automations from apps installed on the site. Uses cursor-based pagination.
+
+**Host quirk**: This endpoint is **not** on `www.wixapis.com` like the rest. Wix's docs are inconsistent — the schema lists `https://www.wixapis.com/v2/automations/query` but that returns 404. The cURL examples (and the working URL) use `https://manage.wix.com/automations-service/v2/automations/query`. Our `WixAPIClient._build_url()` passes absolute URLs through unchanged so the wrapper can target this alternate host.
+
+### Query Automations
+
+```
+POST https://manage.wix.com/automations-service/v2/automations/query
+```
+
+Uses cursor-based pagination with `cursorPaging`.
+
+**Response key**: `automations`
+
+### Helpers
+
+- `get_all_automations()` -- Cursor-paginated retrieval of all automations
 
 ---
 

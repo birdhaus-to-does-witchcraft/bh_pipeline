@@ -1,0 +1,27 @@
+# Core API Client Dependencies
+requests>=2.32.0          # HTTP requests (security fixes in 2.32+ series)
+pyrate-limiter>=3.9.0     # Rate limiting (actively maintained, replaces ratelimit)
+tenacity>=8.2.0           # Retry logic with exponential backoff
+
+# Data Processing
+pandas>=2.0.0             # DataFrames (current: 2.3.3)
+numpy>=2.0.0              # Numerical operations (⚠️ use >=1.26.4 if compatibility issues)
+pydantic>=2.0.0           # Data validation and schema enforcement
+
+# Configuration & Environment
+python-dotenv>=1.0.0      # Environment variables from .env files
+pyyaml>=6.0               # YAML config file parsing
+
+# Logging & Monitoring
+structlog>=23.1.0         # Structured logging (optional, can use stdlib logging)
+
+# Testing (Development)
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.0
+responses>=0.23.0         # Mock HTTP responses for testing
+
+# Type Checking (Development)
+mypy>=1.4.0
+types-requests>=2.31.0
+types-PyYAML>=6.0.0

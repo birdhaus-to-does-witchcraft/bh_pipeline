@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "birdhaus-data-pipeline": {
+      "command": "python",
+      "args": ["-m", "mcp_server.server"],
+      "cwd": "/mnt/c/Users/saaku/the-lab/technologist/birdhaus_projects/birdhaus_data_pipeline",
+      "env": {
+        "PYTHONPATH": "/mnt/c/Users/saaku/the-lab/technologist/birdhaus_projects/birdhaus_data_pipeline/src"
+      }
+    }
+  }
+}

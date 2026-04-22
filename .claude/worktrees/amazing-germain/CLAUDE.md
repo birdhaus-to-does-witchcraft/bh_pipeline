@@ -1,0 +1,3 @@
+- If an API issue comes up, do a websearch for the latest documentation on that API
+- keep local documentation up to date. Especlially if its an implementation plan or refactors. Keep documentation from spwarlling into too many files. 
+- And always make sure api end points and likes are validated with web search for documentation
