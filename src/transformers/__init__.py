@@ -7,6 +7,7 @@ from transformers.events import EventsTransformer
 from transformers.contacts import ContactsTransformer
 from transformers.guests import GuestsTransformer
 from transformers.transactions import TransactionsTransformer
+from transformers.payments import PaymentsTransformer
 from transformers.event_orders import EventOrdersTransformer
 from transformers.members import MembersTransformer
 from transformers.form_submissions import FormSubmissionsTransformer
@@ -22,6 +23,7 @@ __all__ = [
     'ContactsTransformer',
     'GuestsTransformer',
     'TransactionsTransformer',
+    'PaymentsTransformer',
     'EventOrdersTransformer',
     'MembersTransformer',
     'FormSubmissionsTransformer',

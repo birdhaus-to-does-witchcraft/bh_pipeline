@@ -14,6 +14,7 @@ from wix_api.orders import OrdersAPI
 from wix_api.tickets import TicketsAPI
 from wix_api.ticket_definitions import TicketDefinitionsAPI
 from wix_api.transactions import TransactionsAPI
+from wix_api.payments import PaymentsAPI
 from wix_api.members import MembersAPI
 from wix_api.forms import FormsAPI
 from wix_api.coupons import CouponsAPI
@@ -29,6 +30,7 @@ __all__ = [
     "TicketsAPI",
     "TicketDefinitionsAPI",
     "TransactionsAPI",
+    "PaymentsAPI",
     "MembersAPI",
     "FormsAPI",
     "CouponsAPI",

@@ -73,6 +73,21 @@ class GuestsTransformer(BaseTransformer):
         # Attendance status
         transformed['attendance_status'] = guest.get('attendanceStatus')
 
+        # Additional details (Wix populates this on guest records that have a
+        # real order behind them). It carries the canonical paid-vs-free
+        # signal that the rest of the API redacts:
+        #   - order_status: 'PAID' | 'FREE' | 'UNKNOW_ORDER_STATUS' | None
+        #     (Wix's spelling of UNKNOW is intentional, not our typo)
+        #   - rsvp_status:  'YES' | 'UNKNOWN_RSVP_STATUS' | None
+        #   - additional_details_archived: bool | None
+        # When the field block is missing entirely (older guests, anonymized
+        # records), all three are None - downstream code should treat that as
+        # "unknown" rather than "not free".
+        additional_details = guest.get('additionalDetails') or {}
+        transformed['order_status'] = additional_details.get('orderStatus')
+        transformed['rsvp_status'] = additional_details.get('rsvpStatus')
+        transformed['additional_details_archived'] = additional_details.get('archived')
+
         # Secondary language
         transformed['secondary_language_code'] = guest.get('secondaryLanguageCode')
 

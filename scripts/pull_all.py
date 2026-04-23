@@ -13,6 +13,7 @@ Entities pulled:
 - Ticket Definitions (with SALES_DETAILS fieldset)
 - Contacts, Site Members
 - Order Summaries (per event), Event Orders
+- Payments (cashier transactions - mirrors the dashboard "Payments" CSV)
 - Form Submissions (wide AND long format)
 - Coupons (active + expired), Automations
 
@@ -47,6 +48,7 @@ from wix_api.members import MembersAPI
 from wix_api.forms import FormsAPI
 from wix_api.coupons import CouponsAPI
 from wix_api.automations import AutomationsAPI
+from wix_api.payments import PaymentsAPI
 from transformers.events import EventsTransformer
 from transformers.contacts import ContactsTransformer
 from transformers.guests import GuestsTransformer
@@ -56,14 +58,22 @@ from transformers.members import MembersTransformer
 from transformers.form_submissions import FormSubmissionsTransformer
 from transformers.coupons import CouponsTransformer
 from transformers.automations import AutomationsTransformer
+from transformers.payments import PaymentsTransformer
 from transformers.rsvps import RSVPsTransformer
 from transformers.tickets import TicketsTransformer
 from transformers.ticket_definitions import TicketDefinitionsTransformer
+from transformers.attendance_fact import AttendanceFactTransformer
+from transformers.payments_fact import PaymentsFactTransformer
 from transformers.base import BaseTransformer
 
 
 def extract_events(client, output_dir, raw_dir, manifest, logger, timestamp):
-    """Extract all events (TICKETING + RSVP). Returns (ticketing, rsvp) tuple."""
+    """
+    Extract all events (TICKETING + RSVP).
+
+    Returns a (ticketing_raw, rsvp_raw, ticketing_transformed) tuple. The
+    transformed list is reused by the gold attendance_fact step downstream.
+    """
     logger.info("=" * 60)
     logger.info("Extracting Events")
     logger.info("=" * 60)
@@ -92,11 +102,13 @@ def extract_events(client, output_dir, raw_dir, manifest, logger, timestamp):
 
             extra_paths = {}
             csv_path = None
+            ticketing_transformed: list = []
 
             if ticketing_events:
                 csv_path = output_dir / f"events_{timestamp}.csv"
-                EventsTransformer.save_to_csv(ticketing_events, str(csv_path))
-                logger.info(f"Saved {len(ticketing_events)} ticketing events to {csv_path.name}")
+                ticketing_transformed = EventsTransformer.transform_events(ticketing_events)
+                BaseTransformer.save_to_csv(ticketing_transformed, str(csv_path))
+                logger.info(f"Saved {len(ticketing_transformed)} ticketing events to {csv_path.name}")
 
             if rsvp_events:
                 rsvp_csv_path = output_dir / f"rsvp_events_{timestamp}.csv"
@@ -106,7 +118,7 @@ def extract_events(client, output_dir, raw_dir, manifest, logger, timestamp):
 
             if not ticketing_events and not rsvp_events:
                 timer.record(status="skipped", row_count=0, raw_path=raw_path)
-                return None, None
+                return None, None, []
 
             timer.record(
                 status="success",
@@ -115,16 +127,22 @@ def extract_events(client, output_dir, raw_dir, manifest, logger, timestamp):
                 csv_path=csv_path,
                 extra_paths=extra_paths,
             )
-            return ticketing_events, rsvp_events
+            return ticketing_events, rsvp_events, ticketing_transformed
 
         except Exception as e:
             logger.error(f"Events extraction failed: {e}", exc_info=True)
             timer.record(status="failed", error=str(e))
-            return None, None
+            return None, None, []
 
 
 def extract_contacts(client, output_dir, raw_dir, manifest, logger, timestamp):
-    """Extract and transform all contacts."""
+    """
+    Extract and transform all contacts.
+
+    Returns a (raw_contacts, transformed_contacts) tuple. Raw is reused by
+    the guests step for contactId-based enrichment (which reads nested
+    info.name / info.emails). Transformed feeds the gold attendance_fact step.
+    """
     logger.info("=" * 60)
     logger.info("Extracting Contacts")
     logger.info("=" * 60)
@@ -140,28 +158,29 @@ def extract_contacts(client, output_dir, raw_dir, manifest, logger, timestamp):
             if not contacts:
                 logger.warning("No contacts found")
                 timer.record(status="skipped", row_count=0, raw_path=raw_path)
-                return None
+                return None, []
 
+            transformed = ContactsTransformer.transform_contacts(contacts)
             csv_path = output_dir / f"contacts_{timestamp}.csv"
-            ContactsTransformer.save_to_csv(contacts, str(csv_path))
-            logger.info(f"Saved {len(contacts)} contacts to {csv_path.name}")
+            BaseTransformer.save_to_csv(transformed, str(csv_path))
+            logger.info(f"Saved {len(transformed)} contacts to {csv_path.name}")
 
             timer.record(
                 status="success",
-                row_count=len(contacts),
+                row_count=len(transformed),
                 raw_path=raw_path,
                 csv_path=csv_path,
             )
-            return contacts
+            return contacts, transformed
 
         except Exception as e:
             logger.error(f"Contacts extraction failed: {e}", exc_info=True)
             timer.record(status="failed", error=str(e))
-            return None
+            return None, []
 
 
 def extract_members(client, output_dir, raw_dir, manifest, logger, timestamp):
-    """Extract and transform all site members."""
+    """Extract, transform, and return all site members (transformed dicts)."""
     logger.info("=" * 60)
     logger.info("Extracting Site Members")
     logger.info("=" * 60)
@@ -179,17 +198,18 @@ def extract_members(client, output_dir, raw_dir, manifest, logger, timestamp):
                 timer.record(status="skipped", row_count=0, raw_path=raw_path)
                 return None
 
+            transformed = MembersTransformer.transform_members(members)
             csv_path = output_dir / f"members_{timestamp}.csv"
-            MembersTransformer.save_to_csv(members, str(csv_path))
-            logger.info(f"Saved {len(members)} members to {csv_path.name}")
+            BaseTransformer.save_to_csv(transformed, str(csv_path))
+            logger.info(f"Saved {len(transformed)} members to {csv_path.name}")
 
             timer.record(
                 status="success",
-                row_count=len(members),
+                row_count=len(transformed),
                 raw_path=raw_path,
                 csv_path=csv_path,
             )
-            return members
+            return transformed
 
         except Exception as e:
             logger.error(f"Members extraction failed: {e}", exc_info=True)
@@ -198,7 +218,8 @@ def extract_members(client, output_dir, raw_dir, manifest, logger, timestamp):
 
 
 def extract_guests(
-    client, output_dir, raw_dir, manifest, logger, timestamp, rsvp_event_ids=None
+    client, output_dir, raw_dir, manifest, logger, timestamp,
+    rsvp_event_ids=None, raw_contacts=None,
 ):
     """
     Extract and transform all guests, excluding any tied to RSVP-type events.
@@ -207,6 +228,11 @@ def extract_guests(
     Since RSVP events are intentionally not extracted (slow per-event loop),
     we filter their guests out of the silver CSV. The bronze raw JSON still
     contains the full unfiltered API response for completeness.
+
+    When `raw_contacts` is provided, the transformed guest rows are enriched
+    with contact info (first_name, last_name, email, phone) by joining on
+    contactId - the bulk Guests API does not return guestDetails so this
+    join is the only way to get attendee identity in the silver CSV.
     """
     logger.info("=" * 60)
     logger.info("Extracting Guests (excluding RSVP-event guests)")
@@ -242,6 +268,11 @@ def extract_guests(
                 return None
 
             transformed_guests = GuestsTransformer.transform_guests(ticketing_guests)
+
+            if raw_contacts:
+                transformed_guests = GuestsTransformer.enrich_with_contact_data(
+                    transformed_guests, raw_contacts
+                )
 
             csv_path = output_dir / f"guests_{timestamp}.csv"
             BaseTransformer.save_to_csv(transformed_guests, str(csv_path))
@@ -318,7 +349,13 @@ def extract_rsvps(client, output_dir, raw_dir, rsvp_events, manifest, logger, ti
 
 
 def extract_ticket_definitions(client, output_dir, raw_dir, manifest, logger, timestamp):
-    """Extract ticket definitions (templates with pricing, fee_type, sale_status)."""
+    """
+    Extract ticket definitions (templates with pricing, fee_type, sale_status).
+
+    Returns a (raw_definitions, transformed_definitions) tuple. Raw is needed
+    for the tickets join (uses raw nested fields), transformed feeds the gold
+    attendance_fact step.
+    """
     logger.info("=" * 60)
     logger.info("Extracting Ticket Definitions")
     logger.info("=" * 60)
@@ -334,30 +371,37 @@ def extract_ticket_definitions(client, output_dir, raw_dir, manifest, logger, ti
             if not definitions:
                 logger.warning("No ticket definitions found")
                 timer.record(status="skipped", row_count=0, raw_path=raw_path)
-                return None
+                return None, []
 
+            transformed = TicketDefinitionsTransformer.transform_definitions(definitions)
             csv_path = output_dir / f"ticket_definitions_{timestamp}.csv"
-            TicketDefinitionsTransformer.save_to_csv(definitions, str(csv_path))
-            logger.info(f"Saved {len(definitions)} ticket definitions to {csv_path.name}")
+            BaseTransformer.save_to_csv(transformed, str(csv_path))
+            logger.info(f"Saved {len(transformed)} ticket definitions to {csv_path.name}")
 
             timer.record(
                 status="success",
-                row_count=len(definitions),
+                row_count=len(transformed),
                 raw_path=raw_path,
                 csv_path=csv_path,
             )
-            return definitions
+            return definitions, transformed
 
         except Exception as e:
             logger.error(f"Ticket definitions extraction failed: {e}", exc_info=True)
             timer.record(status="failed", error=str(e))
-            return None
+            return None, []
 
 
 def extract_tickets(
     client, output_dir, raw_dir, ticket_definitions, manifest, logger, timestamp
 ):
-    """Extract sold tickets, joined with their ticket definitions."""
+    """
+    Extract sold tickets, joined with their ticket definitions.
+
+    Returns the transformed ticket dicts (with definition columns merged) so
+    the gold attendance_fact step can pick up price / check-in / definition_id
+    per ticket.
+    """
     logger.info("=" * 60)
     logger.info("Extracting Tickets")
     logger.info("=" * 60)
@@ -381,19 +425,18 @@ def extract_tickets(
                 defs_by_id = {d.get('id'): d for d in ticket_definitions if d.get('id')}
                 logger.info(f"Built definitions lookup with {len(defs_by_id)} entries")
 
+            transformed = TicketsTransformer.transform_tickets(tickets, defs_by_id)
             csv_path = output_dir / f"tickets_{timestamp}.csv"
-            TicketsTransformer.save_to_csv(
-                tickets, str(csv_path), definitions_lookup=defs_by_id
-            )
-            logger.info(f"Saved {len(tickets)} tickets to {csv_path.name}")
+            BaseTransformer.save_to_csv(transformed, str(csv_path))
+            logger.info(f"Saved {len(transformed)} tickets to {csv_path.name}")
 
             timer.record(
                 status="success",
-                row_count=len(tickets),
+                row_count=len(transformed),
                 raw_path=raw_path,
                 csv_path=csv_path,
             )
-            return tickets
+            return transformed
 
         except Exception as e:
             logger.error(f"Tickets extraction failed: {e}", exc_info=True)
@@ -452,17 +495,18 @@ def extract_order_summaries(
             ]
             raw_path = dump_raw("order_summaries", raw_payload, timestamp, raw_dir)
 
+            transformed = OrderSummariesTransformer.transform_summaries(events, summary_responses)
             csv_path = output_dir / f"order_summaries_{timestamp}.csv"
-            OrderSummariesTransformer.save_to_csv(events, summary_responses, str(csv_path))
+            BaseTransformer.save_to_csv(transformed, str(csv_path))
             logger.info(f"Saved order summaries to {csv_path.name}")
 
             timer.record(
                 status="success",
-                row_count=len(events),
+                row_count=len(transformed),
                 raw_path=raw_path,
                 csv_path=csv_path,
             )
-            return summary_responses
+            return transformed
 
         except Exception as e:
             logger.error(f"Order summaries extraction failed: {e}", exc_info=True)
@@ -490,17 +534,18 @@ def extract_event_orders(client, output_dir, raw_dir, manifest, logger, timestam
                 timer.record(status="skipped", row_count=0, raw_path=raw_path)
                 return None
 
+            transformed = EventOrdersTransformer.transform_orders(orders)
             csv_path = output_dir / f"event_orders_{timestamp}.csv"
-            EventOrdersTransformer.save_to_csv(orders, str(csv_path))
-            logger.info(f"Saved {len(orders)} event orders to {csv_path.name}")
+            BaseTransformer.save_to_csv(transformed, str(csv_path))
+            logger.info(f"Saved {len(transformed)} event orders to {csv_path.name}")
 
             timer.record(
                 status="success",
-                row_count=len(orders),
+                row_count=len(transformed),
                 raw_path=raw_path,
                 csv_path=csv_path,
             )
-            return orders
+            return transformed
 
         except Exception as e:
             logger.error(f"Event orders extraction failed: {e}", exc_info=True)
@@ -628,6 +673,179 @@ def extract_automations(client, output_dir, raw_dir, manifest, logger, timestamp
             return None
 
 
+def extract_payments(client, output_dir, raw_dir, manifest, logger, timestamp):
+    """
+    Extract every cashier transaction (the same data that powers the
+    `Wix Dashboard > Sales > Payments` CSV export).
+
+    Bronze: full JSON list dumped under data/raw/payments/year=Y/month=M/day=D/.
+    Silver: one CSV row per transaction (sale, refund, declined, chargeback)
+    with the Stripe / PayPal `provider_transaction_id`, billing contact info,
+    refund roll-ups, and the `wix_app_order_id` join key back to event orders.
+    """
+    logger.info("=" * 60)
+    logger.info("Extracting Payments (Cashier)")
+    logger.info("=" * 60)
+
+    with manifest.timer("payments") as timer:
+        try:
+            payments_api = PaymentsAPI(client)
+            payments = payments_api.get_all_transactions(include_refunds=True)
+            logger.info(f"Retrieved {len(payments)} cashier transactions")
+
+            raw_path = dump_raw("payments", payments, timestamp, raw_dir)
+
+            if not payments:
+                logger.warning("No payments returned from cashier API")
+                timer.record(status="skipped", row_count=0, raw_path=raw_path)
+                return None
+
+            transformed = PaymentsTransformer.transform_transactions(payments)
+            csv_path = output_dir / f"payments_{timestamp}.csv"
+            BaseTransformer.save_to_csv(transformed, str(csv_path))
+            logger.info(f"Saved {len(transformed)} payments to {csv_path.name}")
+
+            timer.record(
+                status="success",
+                row_count=len(transformed),
+                raw_path=raw_path,
+                csv_path=csv_path,
+            )
+            return transformed
+
+        except Exception as e:
+            logger.error(f"Payments extraction failed: {e}", exc_info=True)
+            timer.record(status="failed", error=str(e))
+            return None
+
+
+def build_attendance_fact(
+    output_dir,
+    manifest,
+    logger,
+    timestamp,
+    transformed_guests,
+    transformed_events=None,
+    transformed_contacts=None,
+    transformed_members=None,
+    transformed_ticket_definitions=None,
+    transformed_tickets=None,
+    transformed_order_summaries=None,
+    transformed_payments=None,
+):
+    """
+    Build the gold attendance_fact CSV: one row per attendee with all event,
+    pricing, contact, and membership dimensions denormalized.
+
+    Reuses the in-memory transformed silver dicts produced by the upstream
+    extract steps - no extra API calls needed.
+    """
+    logger.info("=" * 60)
+    logger.info("Building Attendance Fact (Gold Layer)")
+    logger.info("=" * 60)
+
+    with manifest.timer("attendance_fact") as timer:
+        try:
+            if not transformed_guests:
+                logger.warning("No guests available - cannot build attendance_fact")
+                timer.record(status="skipped", row_count=0)
+                return None
+
+            rows = AttendanceFactTransformer.build(
+                transformed_guests=transformed_guests,
+                transformed_events=transformed_events,
+                transformed_contacts=transformed_contacts,
+                transformed_members=transformed_members,
+                transformed_ticket_definitions=transformed_ticket_definitions,
+                transformed_tickets=transformed_tickets,
+                transformed_order_summaries=transformed_order_summaries,
+                transformed_payments=transformed_payments,
+            )
+
+            if not rows:
+                logger.warning("Attendance fact built 0 rows")
+                timer.record(status="skipped", row_count=0)
+                return None
+
+            csv_path = output_dir / f"attendance_fact_{timestamp}.csv"
+            BaseTransformer.save_to_csv(rows, str(csv_path))
+            logger.info(f"Saved {len(rows)} attendee rows to {csv_path.name}")
+
+            timer.record(
+                status="success",
+                row_count=len(rows),
+                csv_path=csv_path,
+            )
+            return rows
+
+        except Exception as e:
+            logger.error(f"Attendance fact build failed: {e}", exc_info=True)
+            timer.record(status="failed", error=str(e))
+            return None
+
+
+def build_payments_fact(
+    output_dir,
+    manifest,
+    logger,
+    timestamp,
+    transformed_payments,
+    transformed_event_orders=None,
+    transformed_events=None,
+    transformed_contacts=None,
+    transformed_members=None,
+    transformed_order_summaries=None,
+):
+    """
+    Build the gold payments_fact CSV: one row per cashier transaction, joined
+    with event_orders -> events / contacts / members / order_summaries so each
+    payment carries event_title, category_names, member status, etc.
+
+    Reuses the in-memory transformed silver dicts produced upstream - no extra
+    API calls needed.
+    """
+    logger.info("=" * 60)
+    logger.info("Building Payments Fact (Gold Layer)")
+    logger.info("=" * 60)
+
+    with manifest.timer("payments_fact") as timer:
+        try:
+            if not transformed_payments:
+                logger.warning("No payments available - cannot build payments_fact")
+                timer.record(status="skipped", row_count=0)
+                return None
+
+            rows = PaymentsFactTransformer.build(
+                transformed_payments=transformed_payments,
+                transformed_event_orders=transformed_event_orders,
+                transformed_events=transformed_events,
+                transformed_contacts=transformed_contacts,
+                transformed_members=transformed_members,
+                transformed_order_summaries=transformed_order_summaries,
+            )
+
+            if not rows:
+                logger.warning("Payments fact built 0 rows")
+                timer.record(status="skipped", row_count=0)
+                return None
+
+            csv_path = output_dir / f"payments_fact_{timestamp}.csv"
+            BaseTransformer.save_to_csv(rows, str(csv_path))
+            logger.info(f"Saved {len(rows)} payment rows to {csv_path.name}")
+
+            timer.record(
+                status="success",
+                row_count=len(rows),
+                csv_path=csv_path,
+            )
+            return rows
+
+        except Exception as e:
+            logger.error(f"Payments fact build failed: {e}", exc_info=True)
+            timer.record(status="failed", error=str(e))
+            return None
+
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Extract all data from Wix APIs")
@@ -679,23 +897,28 @@ def main():
             logger.info("Client initialized successfully")
 
             # Events (returns ticketing + RSVP for downstream use)
-            ticketing_events, rsvp_events = extract_events(
+            ticketing_events, rsvp_events, transformed_events = extract_events(
                 client, output_dir, raw_dir, manifest, logger, run_timestamp
             )
 
             # Build set of RSVP event IDs - used to filter RSVP guests out of guests CSV
             rsvp_event_ids = {e.get('id') for e in (rsvp_events or []) if e.get('id')}
 
-            # Contacts
-            extract_contacts(client, output_dir, raw_dir, manifest, logger, run_timestamp)
+            # Contacts (raw kept for guests enrichment; transformed feeds gold)
+            raw_contacts, transformed_contacts = extract_contacts(
+                client, output_dir, raw_dir, manifest, logger, run_timestamp
+            )
 
             # Site Members
-            extract_members(client, output_dir, raw_dir, manifest, logger, run_timestamp)
+            transformed_members = extract_members(
+                client, output_dir, raw_dir, manifest, logger, run_timestamp
+            )
 
-            # Guests (filtered to exclude RSVP-event guests for performance)
-            extract_guests(
+            # Guests (filtered to exclude RSVP-event guests; enriched via contacts)
+            transformed_guests = extract_guests(
                 client, output_dir, raw_dir, manifest, logger, run_timestamp,
                 rsvp_event_ids=rsvp_event_ids,
+                raw_contacts=raw_contacts,
             )
 
             # NOTE: extract_rsvps() is intentionally NOT called.
@@ -705,23 +928,52 @@ def main():
             # is needed in the future.
 
             # Ticket Definitions (fetched FIRST so tickets can join with them)
-            ticket_definitions = extract_ticket_definitions(
+            ticket_definitions, transformed_ticket_definitions = extract_ticket_definitions(
                 client, output_dir, raw_dir, manifest, logger, run_timestamp
             )
 
             # Tickets (joined with definitions)
-            extract_tickets(
+            transformed_tickets = extract_tickets(
                 client, output_dir, raw_dir, ticket_definitions, manifest, logger, run_timestamp
             )
 
             # Order Summaries (uses ticketing events)
-            extract_order_summaries(
+            transformed_order_summaries = extract_order_summaries(
                 client, output_dir, raw_dir, ticketing_events, manifest, logger, run_timestamp
             )
 
-            # Event Orders (individual purchases)
-            extract_event_orders(
+            # Event Orders (individual purchases) - returned for the gold view
+            transformed_event_orders = extract_event_orders(
                 client, output_dir, raw_dir, manifest, logger, run_timestamp
+            )
+
+            # Payments (cashier transactions - powers the dashboard Payments CSV)
+            transformed_payments = extract_payments(
+                client, output_dir, raw_dir, manifest, logger, run_timestamp
+            )
+
+            # Gold layer: attendance_fact (one row per attendee, all dims joined)
+            build_attendance_fact(
+                output_dir, manifest, logger, run_timestamp,
+                transformed_guests=transformed_guests,
+                transformed_events=transformed_events,
+                transformed_contacts=transformed_contacts,
+                transformed_members=transformed_members,
+                transformed_ticket_definitions=transformed_ticket_definitions,
+                transformed_tickets=transformed_tickets,
+                transformed_order_summaries=transformed_order_summaries,
+                transformed_payments=transformed_payments,
+            )
+
+            # Gold layer: payments_fact (one row per payment, event + member dims joined)
+            build_payments_fact(
+                output_dir, manifest, logger, run_timestamp,
+                transformed_payments=transformed_payments,
+                transformed_event_orders=transformed_event_orders,
+                transformed_events=transformed_events,
+                transformed_contacts=transformed_contacts,
+                transformed_members=transformed_members,
+                transformed_order_summaries=transformed_order_summaries,
             )
 
             # Form Submissions (both wide + long)

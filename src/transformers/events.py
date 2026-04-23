@@ -39,16 +39,15 @@ class EventsTransformer(BaseTransformer):
         transformed['short_description'] = event.get('shortDescription')
 
         # Categories - flatten to simple list of names
+        # Note: categories[0] is NOT a meaningful "primary" category (the API order
+        # is not editorially significant), so we deliberately do not emit one.
         categories = event.get('categories', {}).get('categories', [])
         if categories:
             transformed['category_names'] = ', '.join([cat.get('name', '') for cat in categories if cat.get('name')])
             transformed['category_count'] = len(categories)
-            # Keep first category as primary
-            transformed['primary_category'] = categories[0].get('name') if categories else None
         else:
             transformed['category_names'] = None
             transformed['category_count'] = 0
-            transformed['primary_category'] = None
 
         # Date and time
         date_settings = event.get('dateAndTimeSettings', {})
